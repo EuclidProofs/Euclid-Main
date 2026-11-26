@@ -12,6 +12,7 @@ A strategy can run without errors, produce a smooth equity curve, and still be w
 - Reported returns don't reconcile with the trades, or a metric uses the wrong convention.
 - Costs were left out or applied inconsistently.
 - A leverage or position limit held on most days and failed on one.
+- The strategy assumes every order fills, and drifts when one doesn't.
 - A pricing or risk function is off by a sign or a term.
 
 None of these crash. They show up later, with real money. AI code assistants now produce strategies far faster than anyone can check them, and the tool that wrote a strategy is poorly placed to judge it.
@@ -44,6 +45,9 @@ Output on the flawed sample (shortened):
 [FAIL] lookahead
        result: The code reads future data on 491 of 500 dates; e.g. the signal on 2023-03-23
                uses data from 2023-03-27 (2 row(s) ahead); source hint, line 14
+[FAIL] trades_follow_signals
+       result: Units held differ from the signals on 47 date(s); first on 2023-03-23 AAA:
+               signals call for 2000, record shows 0
 
 Verdict: FAILED
 ```
@@ -52,25 +56,62 @@ Each run also writes an evidence file with the hashes of every input and the ful
 
 To check your own backtest, see [docs/backtest-format.md](docs/backtest-format.md).
 
+## Two commands, two questions
+
+| Command | Question it answers |
+| --- | --- |
+| `euclid verify` | Was this backtest recorded and reported correctly? |
+| `euclid stress` | What does the strategy do when something goes wrong? |
+
+`verify` audits one history. `stress` looks for bugs in the strategy itself: it re-runs the strategy, refusing or part-filling one order each time, and checks that the account stays solvent, stays within its limits, and returns to the positions the strategy intended. It needs a strategy that runs in a supported engine (backtrader for now):
+
+```bash
+pip install -e ".[backtrader]"
+euclid stress path/to/backtest
+```
+
+Output on a real pairs-trading strategy whose backtest had passed `verify` (shortened):
+
+```text
+[PASS] stress_solvency
+       result: Held in all 12 fault scenarios tried
+[PASS] stress_limits
+       result: Held in all 12 fault scenarios tried
+[FAIL] stress_recovery
+       result: Broken in 8 of 12 scenarios; first: after refusing order #0 (ORCL, 2005-02-24)
+               the positions never return to the intended path
+
+Source hints (not part of the verdict):
+  line 118: self.qty1 is updated right after an order is placed, before knowing
+            whether the order filled
+```
+
+See [docs/stress-testing.md](docs/stress-testing.md).
+
 ## What EUCLID checks
 
 | Area | Checks | Status |
 | --- | --- | --- |
-| Backtest integrity | Rebuild returns from trades and prices; recompute total return, volatility, Sharpe and drawdown; confirm declared costs were applied | Available |
+| Backtest integrity | Rebuild returns from trades and prices; recompute total return, volatility, Sharpe and drawdown; confirm declared costs were applied; confirm equity never reaches zero | Available |
 | Metric conventions | Declare how a Sharpe ratio was computed; when a number doesn't match, EUCLID names the definition that does | Available |
 | Portfolio constraints | Gross leverage, net exposure, position weight, minimum cash and long-only, checked on every date with the failing date when they don't hold | Available |
 | Lookahead | Trace every signal back to the latest data it depends on; fall back to altering future data when code can't be traced | Available |
-| backtrader strategies | Lookahead check for event-driven `Strategy` classes | Available |
 | Execution | Re-run the strategy and confirm the recorded trades are the ones the signals call for, at the declared price | Available |
-| Stress testing | Refuse or part-fill one order at a time and check the strategy stays solvent, within limits, and returns to its intended positions (`euclid stress`) | Available |
+| Stress testing | Refuse or part-fill one order at a time and check the strategy stays solvent, within limits, and returns to its intended positions | Available |
+| Bug-pattern scan | Flag state updated before a fill is confirmed, and reads of bars that haven't happened yet. Hints only | Available |
+| backtrader strategies | Lookahead, execution and stress checks for event-driven `Strategy` classes, with one or many instruments | Available |
 | Automated trading rules | Order sizing, loss limits and kill-switch logic hold in every reachable state | Planned |
 | Pricing and risk math | Reference implementations, identities such as put-call parity, sensitivities against finite differences | Planned |
 
 ## Tested against a real engine
 
-EUCLID was run on backtrader's built-in moving-average crossover strategy over 20 years of Oracle daily prices (5,036 trading days, 195 trades). It rebuilt backtrader's daily returns from the trade record to 8 decimal places on every day, and reproduced its total return, maximum drawdown and Sharpe ratio. The script is in [examples/real/run_backtrader.py](examples/real/run_backtrader.py).
+EUCLID has been run on two unmodified open-source strategies in backtrader, on real prices.
 
-It was also run on the pairs-trading strategy contributed to backtrader (long-short, two stocks, 2005 to 2014), where returns reconciled on all 2,516 days. Two strategies on one engine is still a small sample.
+**Moving-average crossover** (backtrader built-in; Oracle, 1995 to 2014; 5,036 days, 195 trades). EUCLID rebuilt backtrader's daily returns from the trade record to 8 decimal places on every day, reproduced its total return, maximum drawdown and Sharpe ratio, and confirmed every trade followed from the strategy's orders at the next day's open. It passed stress testing.
+
+**Pairs trading** (backtrader contributed sample; Oracle and Yahoo, 2005 to 2014; long-short, 2,516 days). Returns reconciled on every day and the backtest passed `verify`. Stress testing then found that the strategy never recovers from a refused order, and the source scan pointed to the cause: it updates its own record of its position without checking that the order filled. Run with no spare margin, that flaw took the account below zero, and `verify` traced the start of the problem to the day one order went unfilled.
+
+The scripts are in [examples/real](examples/real). Two strategies on one engine is still a small sample.
 
 ## How it works
 
@@ -91,7 +132,7 @@ Every result carries a status and a strength label. A test is never reported as 
 | `solver_checked` | Constraint solving (Z3) | The constraints hold, or here is a counterexample | Anything outside the encoded constraints |
 | `recomputed` | Independent recalculation | The reported number matches the inputs | That the inputs are right |
 | `traced` | Time-provenance tracing | The property holds for the code that ran, on this data | Other code paths or other data |
-| `tested` | Numerical and perturbation tests | Behaviour is correct on the cases tried | Behaviour on untried cases |
+| `tested` | Perturbation and fault-injection tests | Behaviour is correct on the cases tried | Behaviour on untried cases |
 | `unverified` | No applicable method, or the check did not finish | Nothing | Reported as a gap, never as a pass |
 
 The overall strength of a verdict is the weakest strength among its parts.
@@ -108,19 +149,20 @@ The overall strength of a verdict is the weakest strength among its parts.
 
 - That a strategy is profitable, or will be.
 - That a backtest is free of overfitting. That is a separate statistical question.
+- That a strategy which passes stress testing has no bugs. It survived the faults that were tried.
 - That a whole strategy is verified when only some properties were checked. Every verdict states its scope.
 
 ## Roadmap
 
 - [x] Core data model and fail-safe verdict rules
-- [x] Recompute engine: return reconciliation, performance metrics, costs
+- [x] Recompute engine: return reconciliation, performance metrics, costs, solvency
 - [x] Constraint engine (Z3): portfolio limits on every date
 - [x] Lookahead detection: tracing, perturbation and static hints
-- [x] CLI (`euclid verify`) with CI-friendly exit codes
-- [x] First run against a real engine (backtrader)
+- [x] CLI (`euclid verify`, `euclid stress`) with CI-friendly exit codes
+- [x] Runs against a real engine (backtrader), including multi-asset and short-selling
 - [x] Check that recorded trades follow from the signals
-- [x] Multi-asset and short-selling strategies
 - [x] Stress testing with injected broker faults, and a bug-pattern scan
+- [ ] More fault types: price gaps, missing bars, several failures at once
 - [ ] Trading rules checked over every reachable state
 - [ ] Pricing and risk checks
 - [ ] Lean 4 library of reusable lemmas
