@@ -8,11 +8,11 @@ from typer.testing import CliRunner
 from euclid.cli import app
 from euclid.loader import BacktestFormatError, load_backtest
 from euclid.model import Check, Status, Strength, VerdictStatus, aggregate
-from euclid import constraints, recompute
+from euclid import constraints, lookahead, recompute
 
 
 def run_all(bt):
-    return recompute.run_all(bt) + constraints.run_all(bt)
+    return recompute.run_all(bt) + constraints.run_all(bt) + [lookahead.run(bt, None)[0]]
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,9 +25,10 @@ def samples(tmp_path_factory):
     out = tmp_path_factory.mktemp("samples")
     prices = mod.make_prices()
     trades = mod.make_trades(prices)
-    mod.write(out / "clean", prices, trades, mod.returns_for(prices, trades), mod.PPY)
+    mod.write(out / "clean", prices, trades, mod.returns_for(prices, trades), mod.PPY,
+              mod.STRATEGY_CLEAN)
     flawed, r = mod.make_flawed(prices, trades)
-    mod.write(out / "flawed", prices, flawed, r, 365)
+    mod.write(out / "flawed", prices, flawed, r, 365, mod.STRATEGY_FLAWED)
     return out
 
 
@@ -40,7 +41,7 @@ def test_clean_backtest_is_verified(samples):
     assert all(c.status is Status.VERIFIED for c in checks), [c.detail for c in checks]
     verdict = aggregate(checks, "test")
     assert verdict.status is VerdictStatus.VERIFIED
-    assert verdict.strength is Strength.RECOMPUTED  # weakest of recomputed and solver_checked
+    assert verdict.strength is Strength.TRACED  # the weakest strength among the checks
     solver = [c for c in checks if c.name.startswith("constraint_")]
     assert len(solver) == 4 and all(c.strength is Strength.SOLVER_CHECKED for c in solver)
 
@@ -49,7 +50,8 @@ def test_flawed_backtest_flags_exactly_the_planted_errors(samples):
     checks = by_name(run_all(load_backtest(samples / "flawed")))
     failed = {n for n, c in checks.items() if c.status is Status.FAILED}
     assert failed == {"returns_reconcile", "costs_applied", "metric_sharpe",
-                      "constraint_max_position_weight"}
+                      "constraint_max_position_weight", "lookahead"}
+    assert checks["lookahead"].evidence["counterexample"]["rows_ahead"] == 2
     weight = checks["constraint_max_position_weight"]
     assert weight.evidence["violations"] == 1
     assert weight.evidence["counterexample"]["symbol"] == "AAA"
@@ -66,12 +68,14 @@ def test_missing_reported_metric_is_a_gap_not_a_pass(samples, tmp_path):
     del config["reported"]["sharpe"]
     del config["cost_bps"]
     del config["constraints"]
+    del config["strategy"]
     (tmp_path / "config.json").write_text(json.dumps(config))
 
     checks = by_name(run_all(load_backtest(tmp_path)))
     assert checks["metric_sharpe"].status is Status.UNVERIFIED
     assert checks["costs_applied"].status is Status.UNVERIFIED
     assert checks["constraints"].status is Status.UNVERIFIED
+    assert checks["lookahead"].status is Status.UNVERIFIED
     assert aggregate(list(checks.values()), "t").status is VerdictStatus.PARTIALLY_VERIFIED
 
 
@@ -104,7 +108,8 @@ def test_cli_exit_codes_and_evidence(samples, tmp_path):
     assert bad.exit_code == 1, bad.output
     evidence = json.loads((tmp_path / "bad.json").read_text())
     assert evidence["verdict"]["status"] == "failed"
-    assert set(evidence["inputs_sha256"]) == {"prices.csv", "trades.csv", "returns.csv", "config.json"}
+    assert set(evidence["inputs_sha256"]) == {"prices.csv", "trades.csv", "returns.csv",
+                                              "config.json", "strategy.py"}
 
 
 def test_unknown_constraint_is_a_gap_and_short_position_is_caught(samples, tmp_path):

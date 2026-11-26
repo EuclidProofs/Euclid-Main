@@ -11,6 +11,7 @@ Planted errors in sample_flawed:
   2. Fees are missing on every third trade.
   3. The reported Sharpe ratio uses a 365-day annualisation factor.
   4. An oversized position is held for one day, breaking the position limit.
+  5. The signal code reads prices two days ahead.
 """
 
 from __future__ import annotations
@@ -36,6 +37,29 @@ CONSTRAINTS = {
     "long_only": True,
 }
 OVERSIZE_DAY = 300
+
+STRATEGY_CLEAN = '''"""Sample signal code: long when the 10-day average is above the 40-day."""
+
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+
+
+def trailing_mean(close, window):
+    out = np.full_like(close, np.nan)
+    out[window - 1:] = sliding_window_view(close, window, axis=0).mean(axis=-1)
+    return out
+
+
+def signals(close):
+    fast = trailing_mean(close, 10)
+    slow = trailing_mean(close, 40)
+    return np.where(fast > slow, 1.0, 0.0)
+'''
+
+STRATEGY_FLAWED = STRATEGY_CLEAN.replace(
+    "    fast = trailing_mean(close, 10)\n",
+    "    fast = np.roll(trailing_mean(close, 10), -2, axis=0)  # planted error: reads 2 days ahead\n",
+)
 
 
 def make_prices() -> pd.DataFrame:
@@ -70,8 +94,9 @@ def returns_for(prices: pd.DataFrame, trades: pd.DataFrame) -> pd.Series:
 
 
 def write(folder: Path, prices: pd.DataFrame, trades: pd.DataFrame,
-          returns: pd.Series, sharpe_factor: int) -> None:
+          returns: pd.Series, sharpe_factor: int, strategy: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
+    (folder / "strategy.py").write_text(strategy)
     long = prices.reset_index().melt(id_vars="date", var_name="symbol", value_name="close")
     long.sort_values(["date", "symbol"]).to_csv(folder / "prices.csv", index=False)
     trades.to_csv(folder / "trades.csv", index=False)
@@ -82,6 +107,7 @@ def write(folder: Path, prices: pd.DataFrame, trades: pd.DataFrame,
         "risk_free_rate": 0.0,
         "cost_bps": COST_BPS,
         "constraints": CONSTRAINTS,
+        "strategy": "strategy.py:signals",
         "reported": {
             "total_return": metrics.total_return(returns),
             "volatility": metrics.volatility(returns, PPY),
@@ -120,10 +146,12 @@ def main() -> None:
     prices = make_prices()
     trades = make_trades(prices)
 
-    write(here / "sample_clean", prices, trades, returns_for(prices, trades), PPY)
+    write(here / "sample_clean", prices, trades, returns_for(prices, trades), PPY,
+          STRATEGY_CLEAN)
 
     flawed_trades, flawed_returns = make_flawed(prices, trades)
-    write(here / "sample_flawed", prices, flawed_trades, flawed_returns, 365)  # error 3
+    write(here / "sample_flawed", prices, flawed_trades, flawed_returns, 365,  # error 3
+          STRATEGY_FLAWED)  # error 5
 
     print(f"Wrote {here / 'sample_clean'} and {here / 'sample_flawed'} ({len(trades)} trades)")
 

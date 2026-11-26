@@ -10,9 +10,9 @@ from typing import Optional
 import typer
 
 from . import __version__
-from .loader import BacktestFormatError, load_backtest
+from .loader import BacktestFormatError, _sha256, load_backtest
 from .model import Status, Verdict, VerdictStatus, aggregate
-from . import constraints, recompute
+from . import constraints, lookahead, recompute
 
 app = typer.Typer(add_completion=False, help="Independent verification for trading strategies.")
 
@@ -67,6 +67,8 @@ def main() -> None:
 def verify(
     backtest: Path = typer.Argument(..., help="Directory with prices, trades, returns and config."),
     out: Optional[Path] = typer.Option(None, "--out", help="Where to write the evidence JSON."),
+    strategy: Optional[str] = typer.Option(
+        None, "--strategy", help="Signal code to check for lookahead, as file.py:function."),
 ) -> None:
     """Verify a backtest and write an evidence record."""
     try:
@@ -75,11 +77,14 @@ def verify(
         typer.echo(f"Cannot load backtest: {exc}", err=True)
         raise typer.Exit(code=3)
 
-    checks = recompute.run_all(bt) + constraints.run_all(bt)
+    lookahead_check, strategy_path = lookahead.run(bt, strategy)
+    if strategy_path is not None:
+        bt.input_hashes[strategy_path.name] = _sha256(strategy_path)
+    checks = recompute.run_all(bt) + constraints.run_all(bt) + [lookahead_check]
     scope = (
-        f"{len(checks)} checks (recompute and constraint) on {len(bt.reported_returns)} periods and "
+        f"{len(checks)} checks on {len(bt.reported_returns)} periods and "
         f"{len(bt.trades)} trades; annualisation {bt.periods_per_year}; "
-        "does not assess profitability, overfitting or lookahead"
+        "does not assess profitability or overfitting, or whether the trades follow the signals"
     )
     verdict = aggregate(checks, scope)
     print_report(verdict)

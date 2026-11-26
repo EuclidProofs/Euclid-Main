@@ -32,6 +32,7 @@ class Strength(str, Enum):
     PROVEN = "proven"
     SOLVER_CHECKED = "solver_checked"
     RECOMPUTED = "recomputed"
+    TRACED = "traced"  # exact for the code path that ran, on this data
     TESTED = "tested"
     NONE = "none"
 
@@ -40,6 +41,7 @@ _STRENGTH_ORDER = [
     Strength.PROVEN,
     Strength.SOLVER_CHECKED,
     Strength.RECOMPUTED,
+    Strength.TRACED,
     Strength.TESTED,
     Strength.NONE,
 ]

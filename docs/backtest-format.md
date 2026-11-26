@@ -73,6 +73,32 @@ Add a `constraints` object to `config.json` to have limits checked on every date
 
 These are checked with the Z3 solver in exact rational arithmetic, using values exactly as written in the input files. A pass means the solver found no date that breaks the limit; a failure names the first violating date. An unrecognised key, or no `constraints` object, is reported as **unverified**.
 
+## Strategy code (lookahead check)
+
+To check for lookahead, give EUCLID the signal code. Add to `config.json`:
+
+```json
+"strategy": "strategy.py:signals"
+```
+
+or pass `--strategy path/to/file.py:function`. The file path is relative to the backtest directory.
+
+The function receives closing prices as an array of shape `[dates, symbols]` (symbols in alphabetical order) and returns signals whose first axis is dates. The signal in row `t` may use rows up to and including `t`.
+
+EUCLID checks it in layers:
+
+| Layer | How | Result label |
+| --- | --- | --- |
+| Tracing | One run on data where every value carries the latest date it depends on | `traced` |
+| Perturbation | Used when tracing is not possible: alter data after a cut-off and confirm earlier signals do not move | `tested` |
+| Static scan | Reads the source for known leak patterns and reports line numbers | hints only |
+
+Tracing works on NumPy code that operates on the array it is given. It stops, and EUCLID falls back to perturbation, when the code converts the input (pandas, `np.asarray`), branches in Python on a data value, or calls a NumPy function the tracer does not support. The report says which.
+
+A traced leak is reported as a failure only after altering the future data actually changes a signal. If the code reads future rows but no sampled signal changes, the result is **unverified**.
+
+Without strategy code, lookahead is reported as **unverified**. EUCLID runs the strategy file as ordinary Python, so only point it at code you trust. It does not check that the recorded trades follow from the signals.
+
 ## Conventions
 
 - Equity on a date is cash plus positions marked at that date's close, after that date's trades.
