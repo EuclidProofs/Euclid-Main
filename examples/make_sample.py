@@ -10,6 +10,7 @@ Planted errors in sample_flawed:
   1. One reported daily return is inflated by 0.5 percentage points.
   2. Fees are missing on every third trade.
   3. The reported Sharpe ratio uses a 365-day annualisation factor.
+  4. An oversized position is held for one day, breaking the position limit.
 """
 
 from __future__ import annotations
@@ -28,6 +29,13 @@ CAPITAL = 1_000_000.0
 COST_BPS = 5.0
 PPY = 252
 SYMBOLS = {"AAA": 100.0, "BBB": 50.0}
+CONSTRAINTS = {
+    "max_gross_leverage": 1.5,
+    "max_position_weight": 0.5,
+    "min_cash": 0,
+    "long_only": True,
+}
+OVERSIZE_DAY = 300
 
 
 def make_prices() -> pd.DataFrame:
@@ -73,6 +81,7 @@ def write(folder: Path, prices: pd.DataFrame, trades: pd.DataFrame,
         "periods_per_year": PPY,
         "risk_free_rate": 0.0,
         "cost_bps": COST_BPS,
+        "constraints": CONSTRAINTS,
         "reported": {
             "total_return": metrics.total_return(returns),
             "volatility": metrics.volatility(returns, PPY),
@@ -83,6 +92,29 @@ def write(folder: Path, prices: pd.DataFrame, trades: pd.DataFrame,
     (folder / "config.json").write_text(json.dumps(config, indent=2))
 
 
+def add_oversized_position(prices: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
+    """Buy AAA up to about 65% of capital on one day and sell the excess the next."""
+    day, next_day = prices.index[OVERSIZE_DAY], prices.index[OVERSIZE_DAY + 1]
+    held = trades[(trades["symbol"] == "AAA") & (trades["date"] <= day)]["quantity"].sum()
+    price = float(prices.loc[day, "AAA"])
+    extra = round((0.65 * CAPITAL / price - held) / 100) * 100.0
+    rows = []
+    for date, qty in ((day, extra), (next_day, -extra)):
+        p = float(prices.loc[date, "AAA"])
+        rows.append({"date": date, "symbol": "AAA", "quantity": qty, "price": p,
+                     "fee": round(abs(qty * p) * COST_BPS / 1e4, 2)})
+    out = pd.concat([trades, pd.DataFrame(rows)], ignore_index=True)
+    return out.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+
+def make_flawed(prices: pd.DataFrame, trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+    flawed_trades = add_oversized_position(prices, trades)  # error 4
+    flawed_trades.loc[flawed_trades.index % 3 == 0, "fee"] = 0.0  # error 2
+    flawed_returns = returns_for(prices, flawed_trades)
+    flawed_returns.iloc[250] += 0.005  # error 1
+    return flawed_trades, flawed_returns
+
+
 def main() -> None:
     here = Path(__file__).parent
     prices = make_prices()
@@ -90,10 +122,7 @@ def main() -> None:
 
     write(here / "sample_clean", prices, trades, returns_for(prices, trades), PPY)
 
-    flawed_trades = trades.copy()
-    flawed_trades.loc[flawed_trades.index % 3 == 0, "fee"] = 0.0  # error 2
-    flawed_returns = returns_for(prices, flawed_trades)
-    flawed_returns.iloc[250] += 0.005  # error 1
+    flawed_trades, flawed_returns = make_flawed(prices, trades)
     write(here / "sample_flawed", prices, flawed_trades, flawed_returns, 365)  # error 3
 
     print(f"Wrote {here / 'sample_clean'} and {here / 'sample_flawed'} ({len(trades)} trades)")

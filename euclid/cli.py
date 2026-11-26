@@ -12,7 +12,7 @@ import typer
 from . import __version__
 from .loader import BacktestFormatError, load_backtest
 from .model import Status, Verdict, VerdictStatus, aggregate
-from .recompute import run_all
+from . import constraints, recompute
 
 app = typer.Typer(add_completion=False, help="Independent verification for trading strategies.")
 
@@ -75,9 +75,9 @@ def verify(
         typer.echo(f"Cannot load backtest: {exc}", err=True)
         raise typer.Exit(code=3)
 
-    checks = run_all(bt)
+    checks = recompute.run_all(bt) + constraints.run_all(bt)
     scope = (
-        f"{len(checks)} recompute checks on {len(bt.reported_returns)} periods and "
+        f"{len(checks)} checks (recompute and constraint) on {len(bt.reported_returns)} periods and "
         f"{len(bt.trades)} trades; annualisation {bt.periods_per_year}; "
         "does not assess profitability, overfitting or lookahead"
     )

@@ -49,6 +49,30 @@ Every symbol needs a close on every date. These dates define the backtest calend
 
 Only `initial_capital` is required. A missing reported metric or `cost_bps` is reported as **unverified**, never as a pass.
 
+## Constraints
+
+Add a `constraints` object to `config.json` to have limits checked on every date:
+
+```json
+"constraints": {
+  "max_gross_leverage": 1.5,
+  "max_net_exposure": 1.0,
+  "max_position_weight": 0.5,
+  "min_cash": 0,
+  "long_only": true
+}
+```
+
+| Key | Holds when |
+| --- | --- |
+| `max_gross_leverage` | Sum of absolute position values is at most this multiple of equity |
+| `max_net_exposure` | Absolute net position value is at most this multiple of equity |
+| `max_position_weight` | Each symbol's absolute value is at most this fraction of equity |
+| `min_cash` | Cash is at least this amount |
+| `long_only` | No position is negative |
+
+These are checked with the Z3 solver in exact rational arithmetic, using values exactly as written in the input files. A pass means the solver found no date that breaks the limit; a failure names the first violating date. An unrecognised key, or no `constraints` object, is reported as **unverified**.
+
 ## Conventions
 
 - Equity on a date is cash plus positions marked at that date's close, after that date's trades.
