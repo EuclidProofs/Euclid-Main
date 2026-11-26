@@ -29,6 +29,7 @@ from .model import Check, Status, Strength
 
 METHOD = "smt_z3"
 SOLVER_TIMEOUT_MS = 60_000
+BLOCK_SIZE = 50
 
 
 def _frac(x: Any) -> Fraction:
@@ -88,26 +89,34 @@ Case = tuple[dict[str, str], Fraction, Fraction]
 
 
 def _find_violations(cases: list[Case], limit: Fraction) -> tuple[str, list[int]]:
-    """Ask Z3 for every case where lhs > limit * scale. Returns (result, indexes)."""
-    solver = z3.Solver()
-    solver.set("timeout", SOLVER_TIMEOUT_MS)
-    i, lhs, scale = z3.Int("case"), z3.Real("lhs"), z3.Real("scale")
-    solver.add(z3.Or([
-        z3.And(i == k, lhs == _real(case_lhs), scale == _real(case_scale))
-        for k, (_, case_lhs, case_scale) in enumerate(cases)
-    ]))
-    solver.add(lhs > _real(limit) * scale)
+    """Ask Z3 for every case where lhs > limit * scale. Returns (result, indexes).
 
+    Cases are given to the solver in blocks: solving time grows faster than
+    linearly with the number of cases in one query, so many small queries are
+    much quicker than one large one. Every block must come back unsat for the
+    overall result to be unsat.
+    """
+    i, lhs, scale = z3.Int("case"), z3.Real("lhs"), z3.Real("scale")
+    bound = _real(limit)
     found: list[int] = []
-    while True:
-        result = solver.check()
-        if result == z3.unsat:
-            return "unsat", sorted(found)
-        if result != z3.sat:
-            return "unknown", sorted(found)
-        k = solver.model()[i].as_long()
-        found.append(k)
-        solver.add(i != k)
+    for start in range(0, len(cases), BLOCK_SIZE):
+        solver = z3.Solver()
+        solver.set("timeout", SOLVER_TIMEOUT_MS)
+        solver.add(z3.Or([
+            z3.And(i == start + k, lhs == _real(case_lhs), scale == _real(case_scale))
+            for k, (_, case_lhs, case_scale) in enumerate(cases[start:start + BLOCK_SIZE])
+        ]))
+        solver.add(lhs > bound * scale)
+        while True:
+            result = solver.check()
+            if result == z3.unsat:
+                break
+            if result != z3.sat:
+                return "unknown", sorted(found)
+            k = solver.model()[i].as_long()
+            found.append(k)
+            solver.add(i != k)
+    return "unsat", sorted(found)
 
 
 def _ratio(lhs: Fraction, scale: Fraction) -> str:
