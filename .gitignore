@@ -8,3 +8,4 @@ dist/
 examples/sample_clean/
 examples/sample_flawed/
 *.evidence.json
+*.stress.json

@@ -12,7 +12,8 @@ import typer
 from . import __version__
 from .loader import BacktestFormatError, _sha256, load_backtest
 from .model import Status, Verdict, VerdictStatus, aggregate
-from . import constraints, execution, lookahead, recompute
+from . import constraints, execution, lookahead, patterns, recompute
+from . import stress as stress_module
 
 app = typer.Typer(add_completion=False, help="Independent verification for trading strategies.")
 
@@ -92,6 +93,49 @@ def verify(
 
     out_path = out or Path(f"{bt.path.name}.evidence.json")
     out_path.write_text(json.dumps(build_evidence(verdict, bt.input_hashes), indent=2))
+    typer.echo(f"  Evidence written to {out_path}")
+    raise typer.Exit(code=_EXIT[verdict.status])
+
+
+@app.command()
+def stress(
+    backtest: Path = typer.Argument(..., help="Directory with a backtest and an engine strategy."),
+    scenarios: int = typer.Option(stress_module.DEFAULT_SCENARIOS, "--scenarios",
+                                  help="How many broker faults to try (one strategy run each)."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Where to write the evidence JSON."),
+    strategy: Optional[str] = typer.Option(None, "--strategy", help="Override the strategy."),
+) -> None:
+    """Look for bugs in the strategy by refusing and part-filling its orders."""
+    try:
+        bt = load_backtest(backtest)
+    except BacktestFormatError as exc:
+        typer.echo(f"Cannot load backtest: {exc}", err=True)
+        raise typer.Exit(code=3)
+
+    handle = lookahead.resolve(bt, strategy)
+    checks, results = stress_module.run_stress(bt, handle, scenarios)
+    hints = []
+    if isinstance(handle, lookahead.StrategyHandle):
+        bt.input_hashes[handle.hashed_file.name] = _sha256(handle.hashed_file)
+        hints = patterns.scan(handle.source, handle.source_line_offset)
+
+    live = sum(s.took_effect for s in results)
+    scope = (f"{live} single-fault scenarios (order refused or part-filled) on "
+             f"{len(bt.prices)} bars; shows what was tried, not that no other fault can break it")
+    verdict = aggregate(checks, scope)
+    print_report(verdict)
+    if hints:
+        typer.echo("  Source hints (not part of the verdict):")
+        for h in hints:
+            typer.echo(f"    line {h['line']}: {h['pattern']}")
+            typer.echo(f"        {h['code']}")
+        typer.echo("")
+
+    evidence = build_evidence(verdict, bt.input_hashes)
+    evidence["scenarios"] = [stress_module.asdict(s) for s in results]
+    evidence["source_hints"] = hints
+    out_path = out or Path(f"{bt.path.name}.stress.json")
+    out_path.write_text(json.dumps(evidence, indent=2))
     typer.echo(f"  Evidence written to {out_path}")
     raise typer.Exit(code=_EXIT[verdict.status])
 

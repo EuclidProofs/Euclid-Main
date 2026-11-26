@@ -62,6 +62,7 @@ To check your own backtest, see [docs/backtest-format.md](docs/backtest-format.m
 | Lookahead | Trace every signal back to the latest data it depends on; fall back to altering future data when code can't be traced | Available |
 | backtrader strategies | Lookahead check for event-driven `Strategy` classes | Available |
 | Execution | Re-run the strategy and confirm the recorded trades are the ones the signals call for, at the declared price | Available |
+| Stress testing | Refuse or part-fill one order at a time and check the strategy stays solvent, within limits, and returns to its intended positions (`euclid stress`) | Available |
 | Automated trading rules | Order sizing, loss limits and kill-switch logic hold in every reachable state | Planned |
 | Pricing and risk math | Reference implementations, identities such as put-call parity, sensitivities against finite differences | Planned |
 
@@ -119,6 +120,7 @@ The overall strength of a verdict is the weakest strength among its parts.
 - [x] First run against a real engine (backtrader)
 - [x] Check that recorded trades follow from the signals
 - [x] Multi-asset and short-selling strategies
+- [x] Stress testing with injected broker faults, and a bug-pattern scan
 - [ ] Trading rules checked over every reachable state
 - [ ] Pricing and risk checks
 - [ ] Lean 4 library of reusable lemmas

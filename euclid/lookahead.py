@@ -286,6 +286,8 @@ class StrategyHandle:
         return self.baseline
     default_execution: dict | None = None  # how this engine turns signals into trades
     open_prices: np.ndarray | None = None  # per date, when the engine fills at the open
+    runner: Callable | None = None  # engine strategies: run(data, fault) -> full account tape
+    source_line_offset: int = 0  # where the strategy's source starts in its file
 
 
 def resolve(bt, strategy_spec: str | None) -> StrategyHandle | Check:
@@ -326,8 +328,8 @@ def _resolve_engine(bt, spec: dict) -> StrategyHandle:
     symbols = list(bt.prices.columns)
     ohlcv_path = bt.path / spec.get("ohlcv", "ohlcv.csv")
     dates, ohlcv = bt_adapter.load_ohlcv(ohlcv_path, symbols)
-    cls, source = bt_adapter.load_strategy_class(spec["class"], bt.path)
-    func = bt_adapter.make_signal_function(
+    cls, source, line_offset = bt_adapter.load_strategy_class(spec["class"], bt.path)
+    runner = bt_adapter.make_runner(
         cls, dates, symbols,
         data_order=spec.get("data_order"),
         cash=float(spec.get("cash", bt.initial_capital)),
@@ -336,8 +338,10 @@ def _resolve_engine(bt, spec: dict) -> StrategyHandle:
         params=spec.get("params"),
     )
     return StrategyHandle(
-        func=func, data=ohlcv, dates=[str(d.date()) for d in dates], symbols=symbols,
-        source=source, hashed_file=ohlcv_path, engine="backtrader", traceable=False,
+        func=lambda data: runner(data).decisions, runner=runner,
+        data=ohlcv, dates=[str(d.date()) for d in dates], symbols=symbols,
+        source=source, source_line_offset=line_offset, hashed_file=ohlcv_path,
+        engine="backtrader", traceable=False,
         n_cuts=int(spec.get("cut_offs", ENGINE_CUTS)), seeds=ENGINE_SEEDS,
         # backtrader fills a market order at the next bar's open.
         default_execution={"signal": "order_units", "multiplier": 1, "delay": 1, "price": "open"},
