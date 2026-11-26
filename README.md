@@ -25,7 +25,7 @@ pip install -e .
 
 python examples/make_sample.py          # writes a clean and a flawed sample backtest
 euclid verify examples/sample_clean     # every check passes
-euclid verify examples/sample_flawed    # five planted errors, five failures
+euclid verify examples/sample_flawed    # five planted errors, six failed checks
 ```
 
 Output on the flawed sample (shortened):
@@ -61,6 +61,7 @@ To check your own backtest, see [docs/backtest-format.md](docs/backtest-format.m
 | Portfolio constraints | Gross leverage, net exposure, position weight, minimum cash and long-only, checked on every date with the failing date when they don't hold | Available |
 | Lookahead | Trace every signal back to the latest data it depends on; fall back to altering future data when code can't be traced | Available |
 | backtrader strategies | Lookahead check for event-driven `Strategy` classes | Available |
+| Execution | Re-run the strategy and confirm the recorded trades are the ones the signals call for, at the declared price | Available |
 | Automated trading rules | Order sizing, loss limits and kill-switch logic hold in every reachable state | Planned |
 | Pricing and risk math | Reference implementations, identities such as put-call parity, sensitivities against finite differences | Planned |
 
