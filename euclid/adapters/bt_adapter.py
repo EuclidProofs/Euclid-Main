@@ -97,9 +97,11 @@ def make_runner(
     added to the engine (data0, data1, ...), for strategies that address
     instruments by position.
 
-    `fault` injects one broker fault, counted over the orders the strategy submits:
-        {"kind": "reject", "order": k}   order k is refused
-        {"kind": "partial", "order": k}  order k fills half now, the rest a bar later
+    `fault` injects one fault. Orders are numbered as the strategy submits them:
+        {"kind": "reject", "orders": [k, ...]}                 those orders are refused
+        {"kind": "partial", "order": k}                         order k fills half now, the rest a bar later
+        {"kind": "gap", "bar": b, "symbol": s, "size": 0.15}    prices jump 15% at bar b and stay there
+        {"kind": "missing", "bar": b, "symbol": s}              that instrument has no bar on that date
     """
     bt = _backtrader()
     symbols = list(symbols or ["asset"])
@@ -107,6 +109,12 @@ def make_runner(
     if sorted(feed_order) != sorted(symbols):
         raise ValueError(f"data_order {feed_order} does not match the instruments {symbols}")
     column = {name: i for i, name in enumerate(symbols)}
+
+    def clock(day_number: float) -> int:
+        """A bar's time as whole seconds, so times can be matched exactly."""
+        return round(day_number * 86400)
+
+    master = {clock(bt.date2num(d.to_pydatetime())): i for i, d in enumerate(dates)}
 
     class Tape(bt.Analyzer):
         def start(self):
@@ -129,20 +137,10 @@ def make_runner(
             if order.status == order.Submitted:
                 self.orders.append((order.created.dt, order.data._name, float(order.created.size)))
 
-        def get_analysis(self):
-            index = {t: i for i, t in enumerate(self.bar_times)}
-            decisions = np.zeros((len(self.bar_times), len(symbols)))
-            placed = []
-            for created, name, size in self.orders:
-                if created in index:
-                    decisions[index[created], column[name]] += size
-                placed.append((index.get(created, 0), name, size))
-            return decisions, index, placed
-
     class FaultyBroker(bt.brokers.BackBroker):
-        """The standard broker, able to refuse or part-fill one chosen order."""
+        """The standard broker, able to refuse or part-fill chosen orders."""
 
-        fault: dict | None = None
+        refuse: frozenset = frozenset()
         seen = 0
         fault_time: float | None = None
 
@@ -152,8 +150,9 @@ def make_runner(
                 order = self.submitted.popleft()
                 number, self.seen = self.seen, self.seen + 1
                 self.numbers[order.ref] = number
-                if self.fault and self.fault["kind"] == "reject" and number == self.fault["order"]:
-                    self.fault_time = order.data.datetime[0]
+                if number in self.refuse:
+                    if self.fault_time is None:
+                        self.fault_time = order.data.datetime[0]
                     order.margin()
                     self.notify(order)
                     self._ococheck(order)
@@ -164,15 +163,22 @@ def make_runner(
             super().check_submitted()
 
     def run(ohlcv: np.ndarray, fault: dict | None = None) -> EngineRun:
-        data = np.asarray(ohlcv, dtype=float)
+        data = np.array(ohlcv, dtype=float)
         if data.ndim == 2:
             data = data[:, None, :]
         if data.shape[1:] != (len(symbols), len(FIELDS)):
             raise ValueError(f"OHLCV data has shape {data.shape}; expected "
                              f"[bars, {len(symbols)}, {len(FIELDS)}]")
+        n_bars = len(dates)
+        kind = fault["kind"] if fault else None
+        fault_bar: int | None = None
+        dropped: tuple[str, int] | None = None
+
         broker = FaultyBroker()
-        broker.fault, broker.seen, broker.numbers, broker.fault_time = fault, 0, {}, None
-        if fault and fault["kind"] == "partial":
+        broker.seen, broker.numbers, broker.fault_time = 0, {}, None
+        if kind == "reject":
+            broker.refuse = frozenset(fault.get("orders", [fault.get("order")]))
+        elif kind == "partial":
             done: set[int] = set()
 
             def filler(order, price, ago):
@@ -184,11 +190,22 @@ def make_runner(
                 return remaining
 
             broker.set_filler(filler)
+        elif kind == "gap":
+            # Prices (not volume) jump at this bar and stay at the new level.
+            fault_bar = int(fault["bar"])
+            data[fault_bar:, column[fault["symbol"]], :4] *= 1.0 + float(fault["size"])
+        elif kind == "missing":
+            fault_bar = int(fault["bar"])
+            dropped = (fault["symbol"], fault_bar)
+        elif kind is not None:
+            raise ValueError(f"unknown fault kind {kind!r}")
 
         cerebro = bt.Cerebro(stdstats=False)
         cerebro.broker = broker
         for name in feed_order:
             frame = pd.DataFrame(data[:, column[name], :], index=dates, columns=list(FIELDS))
+            if dropped and dropped[0] == name:
+                frame = frame.drop(frame.index[dropped[1]])
             cerebro.adddata(bt.feeds.PandasData(dataname=frame), name=name)
         cerebro.addstrategy(strategy_cls, **(params or {}))
         cerebro.broker.setcash(cash)
@@ -201,14 +218,34 @@ def make_runner(
             warnings.simplefilter("ignore")
             result = cerebro.run()[0]
         tape = result.analyzers.tape
-        decisions, bar_index, placed = tape.get_analysis()
-        if len(decisions) != len(dates):
-            raise ValueError(f"strategy ran {len(decisions)} bars but the data has {len(dates)}")
+
+        # Put what the engine recorded onto the full calendar. A bar the engine
+        # never saw (a missing bar) carries the previous bar's account forward.
+        rows = [master.get(clock(t)) for t in tape.bar_times]
+        if None in rows or not rows:
+            raise ValueError("the engine reported bars that are not in the supplied dates")
+
+        def on_calendar(values, width):
+            out = np.full((n_bars, width), np.nan)
+            out[rows] = np.asarray(values, dtype=float).reshape(len(rows), width)
+            return pd.DataFrame(out).ffill().bfill().to_numpy()
+
+        decisions = np.zeros((n_bars, len(symbols)))
+        placed = []
+        for created, name, size in tape.orders:
+            row = master.get(clock(created))
+            if row is not None:
+                decisions[row, column[name]] += size
+            placed.append((row if row is not None else 0, name, size))
+        if broker.fault_time is not None:
+            fault_bar = master.get(clock(broker.fault_time))
+
         return EngineRun(
-            decisions=decisions, cash=np.array(tape.cash), equity=np.array(tape.equity),
-            positions=np.array(tape.positions).reshape(len(dates), len(symbols)),
-            closes=np.array(tape.closes).reshape(len(dates), len(symbols)),
-            order_count=broker.seen, fault_bar=bar_index.get(broker.fault_time), orders=placed,
+            decisions=decisions,
+            cash=on_calendar(tape.cash, 1)[:, 0], equity=on_calendar(tape.equity, 1)[:, 0],
+            positions=on_calendar(tape.positions, len(symbols)),
+            closes=on_calendar(tape.closes, len(symbols)),
+            order_count=broker.seen, fault_bar=fault_bar, orders=placed,
         )
 
     return run

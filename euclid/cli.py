@@ -102,10 +102,12 @@ def stress(
     backtest: Path = typer.Argument(..., help="Directory with a backtest and an engine strategy."),
     scenarios: int = typer.Option(stress_module.DEFAULT_SCENARIOS, "--scenarios",
                                   help="How many broker faults to try (one strategy run each)."),
+    gap: float = typer.Option(stress_module.DEFAULT_GAP, "--gap",
+                              help="Size of injected price gaps, as a fraction (0.15 = 15%)."),
     out: Optional[Path] = typer.Option(None, "--out", help="Where to write the evidence JSON."),
     strategy: Optional[str] = typer.Option(None, "--strategy", help="Override the strategy."),
 ) -> None:
-    """Look for bugs in the strategy by refusing and part-filling its orders."""
+    """Look for bugs in the strategy by injecting broker and market-data faults."""
     try:
         bt = load_backtest(backtest)
     except BacktestFormatError as exc:
@@ -113,15 +115,16 @@ def stress(
         raise typer.Exit(code=3)
 
     handle = lookahead.resolve(bt, strategy)
-    checks, results = stress_module.run_stress(bt, handle, scenarios)
+    checks, results = stress_module.run_stress(bt, handle, scenarios, gap)
     hints = []
     if isinstance(handle, lookahead.StrategyHandle):
         bt.input_hashes[handle.hashed_file.name] = _sha256(handle.hashed_file)
         hints = patterns.scan(handle.source, handle.source_line_offset)
 
     live = sum(s.took_effect for s in results)
-    scope = (f"{live} single-fault scenarios (order refused or part-filled) on "
-             f"{len(bt.prices)} bars; shows what was tried, not that no other fault can break it")
+    kinds = sorted({s.kind for s in results if s.took_effect})
+    scope = (f"{live} fault scenarios ({', '.join(kinds)}) on {len(bt.prices)} bars; "
+             "shows what was tried, not that no other fault can break it")
     verdict = aggregate(checks, scope)
     print_report(verdict)
     if hints:

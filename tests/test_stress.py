@@ -69,8 +69,12 @@ def test_strategy_that_assumes_fills_does_not_recover(market):
     checks = by_name(checks)
     assert checks["stress_recovery"].status is Status.FAILED
     assert checks["stress_solvency"].status is Status.VERIFIED
+    # A single refusal leaves this strategy permanently out of step. (Two in a row can
+    # cancel out for a strategy that flips back and forth, so those are not asserted.)
     refused = [s for s in scenarios if s.kind == "reject"]
     assert refused and all(s.recovery == "not_recovered" for s in refused)
+    assert {s.kind for s in scenarios} == {"reject", "partial", "double", "gap", "missing"}
+    assert all(s.recovery == "not_assessed" for s in scenarios if s.kind in ("gap", "missing"))
     first = checks["stress_recovery"].evidence["first_failure"]
     assert first["final_positions"] != first["intended_positions"]
 
@@ -104,11 +108,49 @@ def test_without_an_engine_strategy_stress_is_a_gap():
     assert [c.status for c in checks] == [Status.UNVERIFIED]
 
 
-def test_fault_plan_covers_early_orders_only():
-    faults = plan_faults(100, 12)
+def test_fault_plan_covers_early_orders_and_every_fault_kind():
+    orders = [(i * 3, "X", 10.0 if i % 2 == 0 else -10.0) for i in range(100)]
+    faults = plan_faults(orders, 400, 12)
     assert len(faults) == 12 and max(f["order"] for f in faults) < 80
-    assert {f["kind"] for f in faults} == {"reject", "partial"}
-    assert plan_faults(0, 12) == []
+    assert [f["label"] for f in faults].count("reject") == 4
+    assert {f["label"] for f in faults} == {"reject", "partial", "double", "gap", "missing"}
+    gaps = [f for f in faults if f["label"] == "gap"]
+    assert all((f["size"] > 0) == (orders[f["order"]][2] > 0) for f in gaps)  # against the order
+    assert plan_faults([], 400, 12) == []
+
+
+def test_gap_and_missing_bar_do_what_they_say(market):
+    dates, ohlcv = market
+    run = bt_adapter.make_runner(bt.strategies.MA_CrossOver, dates, ["X"], cash=100_000, stake=10)
+    base = run(ohlcv)
+    gapped = run(ohlcv, fault={"kind": "gap", "bar": 200, "symbol": "X", "size": 0.15})
+    assert gapped.fault_bar == 200
+    assert np.allclose(gapped.closes[200:, 0], base.closes[200:, 0] * 1.15)
+    assert np.allclose(gapped.closes[:200, 0], base.closes[:200, 0])
+    missing = run(ohlcv, fault={"kind": "missing", "bar": 200, "symbol": "X"})
+    assert len(missing.equity) == BARS  # still reported on the full calendar
+    assert missing.closes[200, 0] == base.closes[199, 0]  # the previous bar is carried forward
+
+
+class BreaksOnAGap(bt.Strategy):
+    """Fails outright if price ever moves more than 10% in a bar."""
+
+    def next(self):
+        if len(self) > 1 and abs(self.data.close[0] / self.data.close[-1] - 1) > 0.10:
+            raise RuntimeError("price moved too far")
+        if not self.position:
+            self.buy(size=1)
+        elif len(self) % 20 == 0:
+            self.sell(size=1)
+
+
+def test_a_crash_under_a_fault_is_reported_not_hidden(market):
+    checks, scenarios = run_stress(SimpleNamespace(config={}),
+                                   handle_for(BreaksOnAGap, market), scenarios=6)
+    completes = by_name(checks)["stress_completes"]
+    assert completes.status is Status.FAILED
+    assert "price moved too far" in completes.evidence["first_failure"]["crashed"]
+    assert [s.kind for s in scenarios if s.crashed] == ["gap"]
 
 
 def test_pattern_scan_flags_state_updated_before_the_fill():

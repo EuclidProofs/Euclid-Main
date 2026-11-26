@@ -63,7 +63,7 @@ To check your own backtest, see [docs/backtest-format.md](docs/backtest-format.m
 | `euclid verify` | Was this backtest recorded and reported correctly? |
 | `euclid stress` | What does the strategy do when something goes wrong? |
 
-`verify` audits one history. `stress` looks for bugs in the strategy itself: it re-runs the strategy, refusing or part-filling one order each time, and checks that the account stays solvent, stays within its limits, and returns to the positions the strategy intended. It needs a strategy that runs in a supported engine (backtrader for now):
+`verify` audits one history. `stress` looks for bugs in the strategy itself: it re-runs the strategy, injecting one fault each time (a refused order, two refusals in a row, a part-fill, a price gap, a missing bar), and checks that the strategy keeps running, stays solvent, stays within its limits, and returns to the positions it intended. It needs a strategy that runs in a supported engine (backtrader for now):
 
 ```bash
 pip install -e ".[backtrader]"
@@ -73,12 +73,14 @@ euclid stress path/to/backtest
 Output on a real pairs-trading strategy whose backtest had passed `verify` (shortened):
 
 ```text
+[PASS] stress_completes
+       result: Held in all 12 fault scenarios tried
 [PASS] stress_solvency
        result: Held in all 12 fault scenarios tried
 [PASS] stress_limits
        result: Held in all 12 fault scenarios tried
 [FAIL] stress_recovery
-       result: Broken in 8 of 12 scenarios; first: after refusing order #0 (ORCL, 2005-02-24)
+       result: Broken in 6 of 8 scenarios; first: after refusing order #0 (ORCL, 2005-02-24)
                the positions never return to the intended path
 
 Source hints (not part of the verdict):
@@ -97,7 +99,7 @@ See [docs/stress-testing.md](docs/stress-testing.md).
 | Portfolio constraints | Gross leverage, net exposure, position weight, minimum cash and long-only, checked on every date with the failing date when they don't hold | Available |
 | Lookahead | Trace every signal back to the latest data it depends on; fall back to altering future data when code can't be traced | Available |
 | Execution | Re-run the strategy and confirm the recorded trades are the ones the signals call for, at the declared price | Available |
-| Stress testing | Refuse or part-fill one order at a time and check the strategy stays solvent, within limits, and returns to its intended positions | Available |
+| Stress testing | Inject one fault at a time (refused orders, part-fills, price gaps, missing bars) and check the strategy keeps running, stays solvent, stays within limits, and returns to its intended positions | Available |
 | Bug-pattern scan | Flag state updated before a fill is confirmed, and reads of bars that haven't happened yet. Hints only | Available |
 | backtrader strategies | Lookahead, execution and stress checks for event-driven `Strategy` classes, with one or many instruments | Available |
 | Automated trading rules | Order sizing, loss limits and kill-switch logic hold in every reachable state | Planned |
@@ -109,7 +111,7 @@ EUCLID has been run on two unmodified open-source strategies in backtrader, on r
 
 **Moving-average crossover** (backtrader built-in; Oracle, 1995 to 2014; 5,036 days, 195 trades). EUCLID rebuilt backtrader's daily returns from the trade record to 8 decimal places on every day, reproduced its total return, maximum drawdown and Sharpe ratio, and confirmed every trade followed from the strategy's orders at the next day's open. It passed stress testing.
 
-**Pairs trading** (backtrader contributed sample; Oracle and Yahoo, 2005 to 2014; long-short, 2,516 days). Returns reconciled on every day and the backtest passed `verify`. Stress testing then found that the strategy never recovers from a refused order, and the source scan pointed to the cause: it updates its own record of its position without checking that the order filled. Run with no spare margin, that flaw took the account below zero, and `verify` traced the start of the problem to the day one order went unfilled.
+**Pairs trading** (backtrader contributed sample; Oracle and Yahoo, 2005 to 2014; long-short, 2,516 days). Returns reconciled on every day and the backtest passed `verify`. Stress testing then found that the strategy never recovers from a refused order, and the source scan pointed to the cause: it updates its own record of its position without checking that the order filled. It also stops with an error when its second instrument has no bar for a day. Run with no spare margin, that flaw took the account below zero, and `verify` traced the start of the problem to the day one order went unfilled.
 
 The scripts are in [examples/real](examples/real). Two strategies on one engine is still a small sample.
 
@@ -162,7 +164,7 @@ The overall strength of a verdict is the weakest strength among its parts.
 - [x] Runs against a real engine (backtrader), including multi-asset and short-selling
 - [x] Check that recorded trades follow from the signals
 - [x] Stress testing with injected broker faults, and a bug-pattern scan
-- [ ] More fault types: price gaps, missing bars, several failures at once
+- [x] More fault types: price gaps, missing bars, two refusals in a row
 - [ ] Trading rules checked over every reachable state
 - [ ] Pricing and risk checks
 - [ ] Lean 4 library of reusable lemmas
