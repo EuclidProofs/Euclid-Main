@@ -4,7 +4,6 @@
 
 EUCLID is independent verification for quantitative and automated trading strategies. The aim is the most efficient way to know that a strategy's code, backtest and risk numbers are correct before capital depends on them.
 
-> **Status: early stage.** This repository describes design intent. There is no working release yet, and nothing here has been benchmarked. See [Roadmap](#roadmap).
 
 ## Why
 
