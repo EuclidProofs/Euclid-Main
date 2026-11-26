@@ -44,6 +44,7 @@ Every result carries a status and a strength label. A test is never reported as 
 | `proven` | Formal proof (Lean 4) | The property holds for all inputs, under stated definitions | That the definitions match your intent |
 | `solver_checked` | Constraint solving (Z3) | The constraints hold, or here is a counterexample | Anything outside the encoded constraints |
 | `recomputed` | Exact independent recalculation | The reported number matches the inputs | That the inputs are right |
+| `traced` | Time-provenance tracing | The property holds for the code that ran, on this data | Other code paths or other data |
 | `tested` | Numerical and property tests | Behaviour is correct on the cases tried | Behaviour on untried cases |
 | `unverified` | No applicable method, or the check did not finish | Nothing | Reported as a gap, never as a pass |
 
