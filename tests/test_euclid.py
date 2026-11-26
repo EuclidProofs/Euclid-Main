@@ -206,3 +206,15 @@ def test_no_execution_rule_is_a_gap(samples, tmp_path):
     bt = load_backtest(tmp_path)
     checks = execution.run_all(bt, lookahead.resolve(bt, None))
     assert [c.status for c in checks] == [Status.UNVERIFIED]
+
+
+def test_wiped_out_account_fails_even_when_the_arithmetic_matches(samples, tmp_path):
+    src = samples / "clean"
+    for f in ("prices.csv", "trades.csv", "returns.csv", "strategy.py"):
+        (tmp_path / f).write_bytes((src / f).read_bytes())
+    config = json.loads((src / "config.json").read_text())
+    config["initial_capital"] = 1000.0  # far too little for 2,000-share positions
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    checks = by_name(recompute.run_all(load_backtest(tmp_path)))
+    assert checks["equity_positive"].status is Status.FAILED
+    assert "first_non_positive" in checks["equity_positive"].evidence

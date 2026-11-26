@@ -47,7 +47,7 @@ def _traded_units(bt: Backtest) -> np.ndarray:
 
 
 def _signals(handle: StrategyHandle, n_symbols: int) -> np.ndarray:
-    out = np.asarray(handle.func(handle.data.copy()), dtype=float)
+    out = handle.signals()
     if out.ndim == 1:
         out = out.reshape(-1, 1)
     if out.ndim != 2 or out.shape[1] != n_symbols:
@@ -112,11 +112,11 @@ def check_execution_prices(bt: Backtest, handle: StrategyHandle, rule: dict[str,
     if basis == "close":
         reference = bt.prices
     elif basis == "open":
-        if handle.open_prices is None or len(bt.prices.columns) != 1:
-            return _gap(PRICES, claim, "Open prices are only available for single-instrument "
-                                       "engine strategies")
+        if handle.open_prices is None:
+            return _gap(PRICES, claim, "Open prices are only available for engine strategies "
+                                       "that supply an OHLCV file")
         reference = bt.prices.copy()
-        reference.iloc[:, 0] = handle.open_prices
+        reference.iloc[:, :] = np.asarray(handle.open_prices).reshape(reference.shape)
     else:
         return _gap(PRICES, f"Trades executed at the declared price ({basis!r})",
                     f"Execution price basis {basis!r} is not supported")

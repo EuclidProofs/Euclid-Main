@@ -66,6 +66,25 @@ def check_returns_reconcile(bt: Backtest) -> Check:
     )
 
 
+def check_equity_positive(bt: Backtest) -> Check:
+    name = "equity_positive"
+    claim = "Account equity stays above zero throughout"
+    equity = metrics.equity_from_trades(bt.prices, bt.trades, bt.initial_capital)
+    low = equity.idxmin()
+    evidence = {"minimum_equity": float(equity.min()), "minimum_on": str(low.date())}
+    wiped = equity[equity <= 0]
+    if wiped.empty:
+        return _check(name, claim, Status.VERIFIED,
+                      f"Lowest equity is {equity.min():,.2f} on {low.date()}", evidence)
+    first = wiped.index[0]
+    evidence.update({"first_non_positive": str(first.date()), "days_non_positive": int(len(wiped))})
+    return _check(
+        name, claim, Status.FAILED,
+        f"Equity is zero or negative on {len(wiped)} of {len(equity)} dates, first on "
+        f"{first.date()} ({equity[first]:,.2f}). Returns, Sharpe and drawdown computed past "
+        "that point are arithmetic on a wiped-out account and carry no meaning", evidence)
+
+
 def _metric_check(
     bt: Backtest, key: str, label: str, compute: Callable[[pd.Series], float],
     diagnose: Callable[[float], str | None] | None = None,
@@ -245,7 +264,7 @@ def check_costs_applied(bt: Backtest) -> Check:
 def run_all(bt: Backtest) -> list[Check]:
     """Run every recompute check. A crash in one check becomes an ERROR, never a pass."""
     checks: list[Check] = []
-    for fn in (check_returns_reconcile, check_metrics, check_costs_applied):
+    for fn in (check_returns_reconcile, check_equity_positive, check_metrics, check_costs_applied):
         try:
             result = fn(bt)
             checks.extend(result if isinstance(result, list) else [result])

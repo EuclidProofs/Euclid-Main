@@ -40,7 +40,7 @@ class PeeksAtTomorrow(bt.Strategy):
 
 def check(strategy_cls, market):
     dates, ohlcv = market
-    func = bt_adapter.make_signal_function(strategy_cls, dates, cash=100_000, stake=10)
+    func = bt_adapter.make_signal_function(strategy_cls, dates, ["X"], cash=100_000, stake=10)
     return func, check_lookahead(func, ohlcv, [str(d.date()) for d in dates], trace=False, n_cuts=8)
 
 
@@ -54,3 +54,28 @@ def test_strategy_that_peeks_at_tomorrow_is_caught(market):
     _, result = check(PeeksAtTomorrow, market)
     assert result.status is Status.FAILED
     assert result.evidence["counterexample"]["rows_ahead"] == 1
+
+
+class TradesSecondInstrument(bt.Strategy):
+    """Addresses instruments by position: trades data1 on data0's moves."""
+
+    def next(self):
+        if len(self) < 2:
+            return
+        if self.data0.close[0] > self.data0.close[-1] and not self.getposition(self.data1).size:
+            self.buy(data=self.data1, size=5)
+        elif self.data0.close[0] < self.data0.close[-1] and self.getposition(self.data1).size:
+            self.sell(data=self.data1, size=5)
+
+
+def test_two_instruments_and_feed_order(market):
+    dates, one = market
+    two = np.stack([one, one[::-1].copy()], axis=1)  # instruments "A" and "B"
+    func = bt_adapter.make_signal_function(TradesSecondInstrument, dates, ["A", "B"],
+                                           data_order=["B", "A"], cash=100_000)
+    out = func(two)
+    assert out.shape == (BARS, 2)
+    # data0 is B, so orders go to data1, which is A (column 0).
+    assert np.count_nonzero(out[:, 0]) > 0 and np.count_nonzero(out[:, 1]) == 0
+    result = check_lookahead(func, two, [str(d.date()) for d in dates], trace=False, n_cuts=6)
+    assert result.status is Status.VERIFIED

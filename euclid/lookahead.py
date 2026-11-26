@@ -31,6 +31,7 @@ N_CUTS = 24
 SEEDS = (11, 23)
 CONFIRM_ROWS = 20
 ENGINE_CUTS = 12  # event-driven engines are slow to re-run, so sample fewer dates
+ENGINE_SEEDS = (11,)  # and alter the data once per date
 
 
 # ---- loading ----------------------------------------------------------------
@@ -126,9 +127,10 @@ def _perturb_after(close: np.ndarray, cut: int, seed: int) -> np.ndarray:
     return out
 
 
-def _row_moves(func: Callable, close: np.ndarray, baseline: np.ndarray, row: int, cut: int) -> bool:
+def _row_moves(func: Callable, close: np.ndarray, baseline: np.ndarray, row: int, cut: int,
+               seeds: tuple = SEEDS) -> bool:
     """Does the signal in `row` change when data after `cut` is altered?"""
-    for seed in SEEDS:
+    for seed in seeds:
         out = _run_plain(func, _perturb_after(close, cut, seed))
         if row in _changed_rows(baseline, out, row):
             return True
@@ -136,12 +138,12 @@ def _row_moves(func: Callable, close: np.ndarray, baseline: np.ndarray, row: int
 
 
 def _furthest_dependency(func: Callable, close: np.ndarray, baseline: np.ndarray,
-                         row: int, known_cut: int) -> int:
+                         row: int, known_cut: int, seeds: tuple = SEEDS) -> int:
     """Largest row index the signal in `row` is seen to depend on (binary search)."""
     lo, hi = known_cut, close.shape[0] - 2  # invariant: altering rows > lo moves the signal
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if _row_moves(func, close, baseline, row, mid):
+        if _row_moves(func, close, baseline, row, mid, seeds):
             lo = mid
         else:
             hi = mid - 1
@@ -164,7 +166,8 @@ def _hint_text(hints: list[dict[str, Any]]) -> str:
 # ---- the check --------------------------------------------------------------
 
 def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
-                    source: str = "", trace: bool = True, n_cuts: int = N_CUTS) -> Check:
+                    source: str = "", trace: bool = True, n_cuts: int = N_CUTS,
+                    seeds: tuple = SEEDS, cache: dict | None = None) -> Check:
     close = np.asarray(close, dtype=float)
     n_rows = close.shape[0]
     hints = static_scan(source)
@@ -173,6 +176,8 @@ def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
     try:
         baseline = _run_plain(func, close)
         repeat = _run_plain(func, close)
+        if cache is not None:
+            cache["baseline"] = baseline
     except Exception as exc:  # noqa: BLE001
         return _check(Status.ERROR, Strength.NONE, "none",
                       f"The signal function failed to run: {type(exc).__name__}: {exc}", evidence)
@@ -210,7 +215,7 @@ def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
         # Tags show structural dependence. Confirm that the value really moves.
         sample = leaking[np.linspace(0, len(leaking) - 1, min(CONFIRM_ROWS, len(leaking))).astype(int)]
         for row in sample:
-            if row < n_rows - 1 and _row_moves(func, close, baseline, int(row), int(row)):
+            if row < n_rows - 1 and _row_moves(func, close, baseline, int(row), int(row), seeds):
                 source_row = int(row + ahead[row])
                 evidence["counterexample"] = {
                     "signal_date": dates[row], "uses_data_from": dates[source_row],
@@ -230,14 +235,14 @@ def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
     # Layer 2: perturbation.
     cuts = sorted(set(np.linspace(0, n_rows - 2, min(n_cuts, n_rows - 1)).astype(int).tolist()))
     evidence.update({"method": "perturbation", "tracing_skipped_because": untraceable_reason,
-                     "cut_offs_tested": len(cuts), "seeds": len(SEEDS)})
+                     "cut_offs_tested": len(cuts), "trials_per_cut_off": len(seeds)})
     try:
         for cut in cuts:
-            for seed in SEEDS:
+            for seed in seeds:
                 moved = _changed_rows(baseline, _run_plain(func, _perturb_after(close, cut, seed)), cut)
                 if len(moved):
                     row = int(moved[0])
-                    source_row = _furthest_dependency(func, close, baseline, row, cut)
+                    source_row = _furthest_dependency(func, close, baseline, row, cut, seeds)
                     evidence["counterexample"] = {
                         "signal_date": dates[row], "uses_data_from": dates[source_row],
                         "rows_ahead": source_row - row, "altered_after": dates[cut]}
@@ -254,7 +259,7 @@ def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
     return _check(
         Status.VERIFIED, Strength.TESTED, "perturbation",
         f"No signal moved when later data was altered, at {len(cuts)} cut-off dates x "
-        f"{len(SEEDS)} trials. Tracing was not possible: {untraceable_reason}" + _hint_text(hints),
+        f"{len(seeds)} trial(s). Tracing was not possible: {untraceable_reason}" + _hint_text(hints),
         evidence)
 
 
@@ -271,6 +276,14 @@ class StrategyHandle:
     engine: str | None = None  # None for a plain signal function
     traceable: bool = True
     n_cuts: int = N_CUTS
+    seeds: tuple = SEEDS
+    baseline: np.ndarray | None = None  # signals on the unaltered data, once computed
+
+    def signals(self) -> np.ndarray:
+        """Signals on the unaltered data (computed once, then reused)."""
+        if self.baseline is None:
+            self.baseline = np.asarray(self.func(self.data.copy()), dtype=float)
+        return self.baseline
     default_execution: dict | None = None  # how this engine turns signals into trades
     open_prices: np.ndarray | None = None  # per date, when the engine fills at the open
 
@@ -310,23 +323,25 @@ def _resolve_engine(bt, spec: dict) -> StrategyHandle:
         raise _NoAdapter(f"No adapter for strategy engine {engine!r}; lookahead was not assessed")
     from .adapters import bt_adapter
 
+    symbols = list(bt.prices.columns)
     ohlcv_path = bt.path / spec.get("ohlcv", "ohlcv.csv")
-    dates, ohlcv = bt_adapter.load_ohlcv(ohlcv_path)
+    dates, ohlcv = bt_adapter.load_ohlcv(ohlcv_path, symbols)
     cls, source = bt_adapter.load_strategy_class(spec["class"], bt.path)
     func = bt_adapter.make_signal_function(
-        cls, dates,
+        cls, dates, symbols,
+        data_order=spec.get("data_order"),
         cash=float(spec.get("cash", bt.initial_capital)),
         commission=float(spec.get("commission", float(bt.config.get("cost_bps", 0)) / 1e4)),
-        stake=int(spec.get("stake", 1)),
+        stake=spec.get("stake"),
         params=spec.get("params"),
     )
     return StrategyHandle(
-        func=func, data=ohlcv, dates=[str(d.date()) for d in dates],
-        symbols=list(bt.prices.columns), source=source, hashed_file=ohlcv_path,
-        engine="backtrader", traceable=False, n_cuts=int(spec.get("cut_offs", ENGINE_CUTS)),
+        func=func, data=ohlcv, dates=[str(d.date()) for d in dates], symbols=symbols,
+        source=source, hashed_file=ohlcv_path, engine="backtrader", traceable=False,
+        n_cuts=int(spec.get("cut_offs", ENGINE_CUTS)), seeds=ENGINE_SEEDS,
         # backtrader fills a market order at the next bar's open.
         default_execution={"signal": "order_units", "multiplier": 1, "delay": 1, "price": "open"},
-        open_prices=ohlcv[:, 0],
+        open_prices=ohlcv[:, :, 0],
     )
 
 
@@ -334,8 +349,11 @@ def run(handle: StrategyHandle | Check) -> Check:
     """Run the lookahead check for a resolved strategy."""
     if isinstance(handle, Check):
         return handle
+    cache: dict = {}
     check = check_lookahead(handle.func, handle.data, handle.dates, handle.source,
-                            trace=handle.traceable, n_cuts=handle.n_cuts)
+                            trace=handle.traceable, n_cuts=handle.n_cuts, seeds=handle.seeds,
+                            cache=cache)
+    handle.baseline = cache.get("baseline")
     check.evidence["symbols"] = handle.symbols
     if handle.engine:
         check.evidence.update({"engine": handle.engine, "signal": "order decisions per bar"})

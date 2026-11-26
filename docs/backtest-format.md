@@ -49,6 +49,10 @@ Every symbol needs a close on every date. These dates define the backtest calend
 
 Only `initial_capital` is required. A missing reported metric or `cost_bps` is reported as **unverified**, never as a pass.
 
+## Built-in sanity check
+
+EUCLID always checks that account equity stays above zero. Once equity reaches zero, returns and ratios are still computable but mean nothing, so a backtest that passes through zero fails this check even if every reported number matches.
+
 ## Constraints
 
 Add a `constraints` object to `config.json` to have limits checked on every date:
@@ -113,7 +117,19 @@ A backtrader `Strategy` class is event-driven, so it cannot be traced. EUCLID re
 }
 ```
 
-`class` is `file.py:Class` or `package.module:Class`. `ohlcv.csv` has columns `date, open, high, low, close, volume` for one instrument. Needs `pip install backtrader`. The result is labelled `tested`, at 12 cut-off dates by default (`"cut_offs"` to change).
+`class` is `file.py:Class` or `package.module:Class`. Needs `pip install backtrader`.
+
+`ohlcv.csv` has columns `date, open, high, low, close, volume`, plus `symbol` when there is more than one instrument. Optional keys:
+
+| Key | Meaning |
+| --- | --- |
+| `data_order` | Order the feeds are added to the engine (`data0`, `data1`, ...), for strategies that address instruments by position. Default: alphabetical |
+| `stake` | Fixed order size, for strategies that rely on a sizer |
+| `params` | Parameters passed to the strategy |
+| `cash`, `commission` | Default to `initial_capital` and `cost_bps` |
+| `cut_offs` | Number of cut-off dates to test (default 12) |
+
+The result is labelled `tested`. The check takes about as long as 14 runs of the strategy, so a slow strategy means a slow check. Anything the strategy prints is suppressed.
 
 ## Execution rule (do the trades follow the signals?)
 

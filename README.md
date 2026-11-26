@@ -69,7 +69,7 @@ To check your own backtest, see [docs/backtest-format.md](docs/backtest-format.m
 
 EUCLID was run on backtrader's built-in moving-average crossover strategy over 20 years of Oracle daily prices (5,036 trading days, 195 trades). It rebuilt backtrader's daily returns from the trade record to 8 decimal places on every day, and reproduced its total return, maximum drawdown and Sharpe ratio. The script is in [examples/real/run_backtrader.py](examples/real/run_backtrader.py).
 
-This is one long-only strategy on one instrument. Multi-asset and short-selling strategies have not been tested yet.
+It was also run on the pairs-trading strategy contributed to backtrader (long-short, two stocks, 2005 to 2014), where returns reconciled on all 2,516 days. Two strategies on one engine is still a small sample.
 
 ## How it works
 
@@ -118,7 +118,7 @@ The overall strength of a verdict is the weakest strength among its parts.
 - [x] CLI (`euclid verify`) with CI-friendly exit codes
 - [x] First run against a real engine (backtrader)
 - [x] Check that recorded trades follow from the signals
-- [ ] Multi-asset and short-selling strategies
+- [x] Multi-asset and short-selling strategies
 - [ ] Trading rules checked over every reachable state
 - [ ] Pricing and risk checks
 - [ ] Lean 4 library of reusable lemmas
