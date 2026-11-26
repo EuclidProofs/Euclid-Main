@@ -116,7 +116,7 @@ The overall strength of a verdict is the weakest strength among its parts.
 - [x] Lookahead detection: tracing, perturbation and static hints
 - [x] CLI (`euclid verify`) with CI-friendly exit codes
 - [x] First run against a real engine (backtrader)
-- [ ] Check that recorded trades follow from the signals
+- [x] Check that recorded trades follow from the signals
 - [ ] Multi-asset and short-selling strategies
 - [ ] Trading rules checked over every reachable state
 - [ ] Pricing and risk checks
