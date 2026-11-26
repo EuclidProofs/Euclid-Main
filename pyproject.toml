@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "euclid-verify"
+version = "0.0.1"
+description = "Independent verification for quantitative and automated trading strategies"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+euclid = "euclid.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["euclid*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
