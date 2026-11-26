@@ -25,10 +25,13 @@ class Recorder(bt.Analyzer):
     """Record closes and executed orders exactly as the engine saw them."""
 
     def start(self):
-        self.closes, self.trades = [], []
+        self.closes, self.trades, self.bars = [], [], []
 
     def next(self):
-        self.closes.append((self.strategy.datetime.date(0).isoformat(), self.data.close[0]))
+        d = self.data
+        self.closes.append((self.strategy.datetime.date(0).isoformat(), d.close[0]))
+        self.bars.append((self.strategy.datetime.date(0).isoformat(), d.open[0], d.high[0],
+                          d.low[0], d.close[0], d.volume[0]))
 
     def notify_order(self, order):
         if order.status == order.Completed:
@@ -41,7 +44,7 @@ class Recorder(bt.Analyzer):
             })
 
     def get_analysis(self):
-        return {"closes": self.closes, "trades": self.trades}
+        return {"closes": self.closes, "trades": self.trades, "bars": self.bars}
 
 
 def main(csv_path: str, out_dir: str, sharpe_mode: str = "default") -> None:
@@ -76,6 +79,9 @@ def main(csv_path: str, out_dir: str, sharpe_mode: str = "default") -> None:
     pd.DataFrame({"date": [d.date().isoformat() for d in returns], "ret": list(returns.values())}
                  ).to_csv(out / "returns.csv", index=False)
 
+    pd.DataFrame(rec["bars"], columns=["date", "open", "high", "low", "close", "volume"]).to_csv(
+        out / "ohlcv.csv", index=False)
+
     config = {
         "initial_capital": CASH,
         "periods_per_year": 252,
@@ -88,6 +94,11 @@ def main(csv_path: str, out_dir: str, sharpe_mode: str = "default") -> None:
             "sharpe": strat.analyzers.sharpe.get_analysis()["sharperatio"],
             "max_drawdown": -strat.analyzers.dd.get_analysis()["max"]["drawdown"] / 100.0,
         },
+        "sharpe_convention": ("backtrader_default" if sharpe_mode == "default" else
+                              {"returns": "periodic", "risk_free_rate": 0.0, "annualize": True,
+                               "std": "population"}),
+        "strategy": {"engine": "backtrader", "class": "backtrader.strategies:MA_CrossOver",
+                     "ohlcv": "ohlcv.csv", "stake": STAKE},
         "source": {"engine": f"backtrader {bt.__version__}", "strategy": "MA_CrossOver (built-in)",
                    "data": Path(csv_path).name, "sharpe_settings": sharpe_mode},
     }

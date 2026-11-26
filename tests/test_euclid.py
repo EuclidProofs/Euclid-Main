@@ -128,3 +128,46 @@ def test_unknown_constraint_is_a_gap_and_short_position_is_caught(samples, tmp_p
     assert checks["constraint_max_turnover"].status is Status.UNVERIFIED
     assert checks["constraint_long_only"].status is Status.FAILED
     assert checks["constraint_long_only"].evidence["counterexample"]["symbol"] == "BBB"
+
+
+def _with_config(samples, tmp_path, change):
+    src = samples / "clean"
+    for f in ("prices.csv", "trades.csv", "returns.csv", "strategy.py"):
+        (tmp_path / f).write_bytes((src / f).read_bytes())
+    config = json.loads((src / "config.json").read_text())
+    change(config)
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    return by_name(recompute.run_all(load_backtest(tmp_path)))["metric_sharpe"]
+
+
+def test_sharpe_under_a_declared_convention(samples, tmp_path):
+    from euclid import metrics
+    bt = load_backtest(samples / "clean")
+    preset = metrics.SHARPE_PRESETS["backtrader_default"]
+    value = metrics.sharpe_with(bt.reported_returns, 252, preset)
+
+    def declare(config):
+        config["reported"]["sharpe"] = value
+        config["sharpe_convention"] = "backtrader_default"
+
+    assert _with_config(samples, tmp_path, declare).status is Status.VERIFIED
+
+
+def test_sharpe_matching_an_undeclared_convention_is_a_gap(samples, tmp_path):
+    from euclid import metrics
+    bt = load_backtest(samples / "clean")
+    value = metrics.sharpe_with(bt.reported_returns, 252, metrics.SHARPE_PRESETS["backtrader_default"])
+
+    def report_only(config):
+        config["reported"]["sharpe"] = value
+
+    check = _with_config(samples, tmp_path, report_only)
+    assert check.status is Status.UNVERIFIED
+    assert "calendar-year returns" in check.evidence["matching_definition"]
+
+
+def test_sharpe_matching_nothing_fails(samples, tmp_path):
+    def nonsense(config):
+        config["reported"]["sharpe"] = 9.87
+
+    assert _with_config(samples, tmp_path, nonsense).status is Status.FAILED

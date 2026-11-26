@@ -22,13 +22,14 @@ from typing import Any, Callable
 import numpy as np
 
 from .model import Check, Status, Strength
-from .tracer import TimeTagged, tag_by_row
+from .tracer import TimeTagged, Untraceable, tag_by_row
 
 NAME = "lookahead"
 CLAIM = "Every signal uses only data available on or before its own date"
 N_CUTS = 24
 SEEDS = (11, 23)
 CONFIRM_ROWS = 20
+ENGINE_CUTS = 12  # event-driven engines are slow to re-run, so sample fewer dates
 
 
 # ---- loading ----------------------------------------------------------------
@@ -162,7 +163,7 @@ def _hint_text(hints: list[dict[str, Any]]) -> str:
 # ---- the check --------------------------------------------------------------
 
 def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
-                    source: str = "") -> Check:
+                    source: str = "", trace: bool = True, n_cuts: int = N_CUTS) -> Check:
     close = np.asarray(close, dtype=float)
     n_rows = close.shape[0]
     hints = static_scan(source)
@@ -182,6 +183,8 @@ def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
     # Layer 1: tracing.
     untraceable_reason = None
     try:
+        if not trace:
+            raise Untraceable("this kind of strategy is event-driven and cannot be traced")
         traced = func(tag_by_row(close))
         if not isinstance(traced, TimeTagged):
             untraceable_reason = "the function's result was not derived from the traced input"
@@ -224,7 +227,7 @@ def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
             "Review the code" + _hint_text(hints), evidence)
 
     # Layer 2: perturbation.
-    cuts = sorted(set(np.linspace(0, n_rows - 2, min(N_CUTS, n_rows - 1)).astype(int).tolist()))
+    cuts = sorted(set(np.linspace(0, n_rows - 2, min(n_cuts, n_rows - 1)).astype(int).tolist()))
     evidence.update({"method": "perturbation", "tracing_skipped_because": untraceable_reason,
                      "cut_offs_tested": len(cuts), "seeds": len(SEEDS)})
     try:
@@ -261,6 +264,8 @@ def run(bt, strategy_spec: str | None) -> tuple[Check, Path | None]:
         return _check(Status.UNVERIFIED, Strength.NONE, "none",
                       "No strategy code supplied (set \"strategy\" in config.json or pass "
                       "--strategy); lookahead was not assessed", {}), None
+    if isinstance(spec, dict):
+        return _run_engine_strategy(bt, spec)
     try:
         func, path = load_signal_function(spec, bt.path)
     except Exception as exc:  # noqa: BLE001
@@ -271,3 +276,34 @@ def run(bt, strategy_spec: str | None) -> tuple[Check, Path | None]:
     check.evidence["strategy_file"] = path.name
     check.evidence["symbols"] = list(bt.prices.columns)
     return check, path
+
+
+def _run_engine_strategy(bt, spec: dict) -> tuple[Check, Path | None]:
+    """Lookahead check for a strategy written for a backtesting engine."""
+    engine = spec.get("engine")
+    if engine != "backtrader":
+        return _check(Status.UNVERIFIED, Strength.NONE, "none",
+                      f"No adapter for strategy engine {engine!r}; lookahead was not assessed",
+                      {}), None
+    try:
+        from .adapters import bt_adapter
+
+        ohlcv_path = bt.path / spec.get("ohlcv", "ohlcv.csv")
+        dates, ohlcv = bt_adapter.load_ohlcv(ohlcv_path)
+        cls, source = bt_adapter.load_strategy_class(spec["class"], bt.path)
+        func = bt_adapter.make_signal_function(
+            cls, dates,
+            cash=float(spec.get("cash", bt.initial_capital)),
+            commission=float(spec.get("commission", float(bt.config.get("cost_bps", 0)) / 1e4)),
+            stake=int(spec.get("stake", 1)),
+            params=spec.get("params"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _check(Status.ERROR, Strength.NONE, "none",
+                      f"Could not set up the strategy: {type(exc).__name__}: {exc}", {}), None
+
+    check = check_lookahead(func, ohlcv, [str(d.date()) for d in dates], source,
+                            trace=False, n_cuts=int(spec.get("cut_offs", ENGINE_CUTS)))
+    check.evidence.update({"engine": "backtrader", "strategy_class": spec["class"],
+                           "signal": "order decisions per bar"})
+    return check, ohlcv_path

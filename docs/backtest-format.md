@@ -99,6 +99,48 @@ A traced leak is reported as a failure only after altering the future data actua
 
 Without strategy code, lookahead is reported as **unverified**. EUCLID runs the strategy file as ordinary Python, so only point it at code you trust. It does not check that the recorded trades follow from the signals.
 
+### backtrader strategies
+
+A backtrader `Strategy` class is event-driven, so it cannot be traced. EUCLID re-runs it on altered data instead and compares the orders it submits on each bar:
+
+```json
+"strategy": {
+  "engine": "backtrader",
+  "class": "my_strategy.py:MyStrategy",
+  "ohlcv": "ohlcv.csv",
+  "stake": 2000,
+  "params": {"fast": 10, "slow": 30}
+}
+```
+
+`class` is `file.py:Class` or `package.module:Class`. `ohlcv.csv` has columns `date, open, high, low, close, volume` for one instrument. Needs `pip install backtrader`. The result is labelled `tested`, at 12 cut-off dates by default (`"cut_offs"` to change).
+
+## Sharpe ratio definition
+
+Sharpe ratios are computed many ways. Declare the one your report used:
+
+```json
+"sharpe_convention": {
+  "returns": "periodic",
+  "risk_free_rate": 0.0,
+  "annualize": true,
+  "std": "sample",
+  "rf_conversion": "simple"
+}
+```
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `returns` | `periodic` (each row) or `annual` (calendar-year returns) | `periodic` |
+| `risk_free_rate` | Annual rate | top-level `risk_free_rate`, else 0 |
+| `annualize` | Multiply by the square root of `periods_per_year` | `true` |
+| `std` | `sample` or `population` | `sample` |
+| `rf_conversion` | `simple` or `geometric` conversion of the annual rate | `simple` |
+
+Or use a preset name: `"sharpe_convention": "backtrader_default"` (calendar-year returns, 1% risk-free rate, population standard deviation, not annualised).
+
+If the reported value does not match the declared definition, EUCLID searches other common definitions and names the one that fits. A match with an undeclared definition is reported as **unverified**, not as a pass.
+
 ## Conventions
 
 - Equity on a date is cash plus positions marked at that date's close, after that date's trades.

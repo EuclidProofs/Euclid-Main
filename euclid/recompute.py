@@ -109,8 +109,93 @@ def _annualisation_hint(bt: Backtest, compute_with: Callable[[int], float]) -> C
     return diagnose
 
 
+def _declared_sharpe_convention(bt: Backtest) -> tuple[dict, bool]:
+    """The Sharpe definition the user declared, or EUCLID's default."""
+    raw = bt.config.get("sharpe_convention")
+    base = {**metrics.SHARPE_DEFAULT, "risk_free_rate": bt.risk_free_rate}
+    if raw is None:
+        return base, False
+    if isinstance(raw, str):
+        if raw not in metrics.SHARPE_PRESETS:
+            raise ValueError(f"unknown sharpe_convention preset {raw!r}; "
+                             f"known: {sorted(metrics.SHARPE_PRESETS)}")
+        raw = metrics.SHARPE_PRESETS[raw]
+    unknown = set(raw) - set(metrics.SHARPE_DEFAULT)
+    if unknown:
+        raise ValueError(f"unknown sharpe_convention keys: {sorted(unknown)}")
+    return {**base, **raw}, True
+
+
+def _sharpe_alternatives(declared: dict, ppy: int):
+    """Other well-known Sharpe definitions, closest to the declared one first."""
+    options = []
+    for returns in ("periodic", "annual"):
+        for rf in dict.fromkeys((declared["risk_free_rate"], 0.0, 0.01)):
+            for std in ("sample", "population"):
+                if returns == "annual":
+                    options.append(({"returns": returns, "risk_free_rate": rf, "std": std,
+                                     "annualize": False, "rf_conversion": "simple"}, ppy))
+                    continue
+                for annualize in (True, False):
+                    for conv in (("simple", "geometric") if rf else ("simple",)):
+                        for factor in dict.fromkeys((ppy, *_COMMON_FACTORS)):
+                            options.append(({"returns": returns, "risk_free_rate": rf, "std": std,
+                                             "annualize": annualize, "rf_conversion": conv}, factor))
+
+    def distance(option) -> int:
+        conv, factor = option
+        return sum(conv[k] != declared[k] for k in conv) + (factor != ppy)
+
+    return sorted(options, key=distance)
+
+
+def check_sharpe(bt: Backtest) -> Check:
+    name = "metric_sharpe"
+    reported = bt.config.get("reported", {}).get("sharpe")
+    if reported is None:
+        return _check(name, "Reported Sharpe ratio is correct", Status.UNVERIFIED,
+                      "No reported Sharpe ratio in config.json", {})
+    reported, ppy, tol = float(reported), bt.periods_per_year, bt.tolerance("metrics")
+    r = bt.reported_returns
+    declared, explicit = _declared_sharpe_convention(bt)
+    definition = metrics.describe_sharpe(declared, ppy)
+    claim = f"Reported Sharpe ratio = {reported:.6g} ({definition})"
+    value = metrics.sharpe_with(r, ppy, declared)
+    evidence = {"reported": reported, "recomputed": value, "tolerance": tol,
+                "definition": definition, "definition_declared": explicit}
+
+    if math.isnan(value):
+        return _check(name, claim, Status.UNVERIFIED,
+                      "Sharpe ratio is undefined for these returns", evidence)
+    if abs(value - reported) <= tol:
+        return _check(name, claim, Status.VERIFIED,
+                      f"Recomputed {value:.6g}; matches within {tol:g}", evidence)
+
+    for alt, factor in _sharpe_alternatives(declared, ppy):
+        alt_value = metrics.sharpe_with(r, factor, alt)
+        if math.isnan(alt_value) or abs(alt_value - reported) > tol:
+            continue
+        alt_text = metrics.describe_sharpe(alt, factor)
+        evidence["matching_definition"] = alt_text
+        contradicts = explicit or factor != ppy
+        if contradicts:
+            return _check(
+                name, claim, Status.FAILED,
+                f"Recomputed {value:.6g}, reported {reported:.6g}; the reported value instead "
+                f"matches: {alt_text}", evidence)
+        return _check(
+            name, claim, Status.UNVERIFIED,
+            f"Under EUCLID's default definition the value is {value:.6g}, but the reported "
+            f"{reported:.6g} matches another definition: {alt_text}. Declare sharpe_convention "
+            "in config.json to confirm which is intended", evidence)
+
+    return _check(name, claim, Status.FAILED,
+                  f"Recomputed {value:.6g}, reported {reported:.6g}; no recognised Sharpe "
+                  "definition reproduces the reported value", evidence)
+
+
 def check_metrics(bt: Backtest) -> list[Check]:
-    r, ppy, rf = bt.reported_returns, bt.periods_per_year, bt.risk_free_rate
+    r, ppy = bt.reported_returns, bt.periods_per_year
     return [
         _metric_check(bt, "total_return", "total return", metrics.total_return),
         _metric_check(
@@ -118,11 +203,7 @@ def check_metrics(bt: Backtest) -> list[Check]:
             lambda s: metrics.volatility(s, ppy),
             _annualisation_hint(bt, lambda f: metrics.volatility(r, f)),
         ),
-        _metric_check(
-            bt, "sharpe", "Sharpe ratio",
-            lambda s: metrics.sharpe(s, ppy, rf),
-            _annualisation_hint(bt, lambda f: metrics.sharpe(r, f, rf)),
-        ),
+        check_sharpe(bt),
         _metric_check(bt, "max_drawdown", "maximum drawdown", metrics.max_drawdown),
     ]
 
