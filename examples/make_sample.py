@@ -12,6 +12,7 @@ Planted errors in sample_flawed:
   3. The reported Sharpe ratio uses a 365-day annualisation factor.
   4. An oversized position is held for one day, breaking the position limit.
   5. The signal code reads prices two days ahead.
+Errors 4 and 5 also mean the recorded trades no longer follow from the signals.
 """
 
 from __future__ import annotations
@@ -108,6 +109,7 @@ def write(folder: Path, prices: pd.DataFrame, trades: pd.DataFrame,
         "cost_bps": COST_BPS,
         "constraints": CONSTRAINTS,
         "strategy": "strategy.py:signals",
+        "execution": {"signal": "target_units", "multiplier": 2000, "delay": 1, "price": "close"},
         "reported": {
             "total_return": metrics.total_return(returns),
             "volatility": metrics.volatility(returns, PPY),

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -257,53 +258,85 @@ def check_lookahead(func: Callable, close: np.ndarray, dates: list[str],
         evidence)
 
 
-def run(bt, strategy_spec: str | None) -> tuple[Check, Path | None]:
-    """Run the lookahead check for a backtest. Returns the check and the strategy path."""
+@dataclass
+class StrategyHandle:
+    """A loaded strategy, ready to be run on data by any check."""
+
+    func: Callable  # data array -> signals, first axis = dates
+    data: np.ndarray
+    dates: list[str]
+    symbols: list[str]
+    source: str
+    hashed_file: Path
+    engine: str | None = None  # None for a plain signal function
+    traceable: bool = True
+    n_cuts: int = N_CUTS
+    default_execution: dict | None = None  # how this engine turns signals into trades
+    open_prices: np.ndarray | None = None  # per date, when the engine fills at the open
+
+
+def resolve(bt, strategy_spec: str | None) -> StrategyHandle | Check:
+    """Load the strategy named in config.json or on the command line.
+
+    Returns a handle, or a Check explaining why there is nothing to run.
+    """
     spec = strategy_spec or bt.config.get("strategy")
     if not spec:
         return _check(Status.UNVERIFIED, Strength.NONE, "none",
                       "No strategy code supplied (set \"strategy\" in config.json or pass "
-                      "--strategy); lookahead was not assessed", {}), None
-    if isinstance(spec, dict):
-        return _run_engine_strategy(bt, spec)
+                      "--strategy); lookahead was not assessed", {})
     try:
+        if isinstance(spec, dict):
+            return _resolve_engine(bt, spec)
         func, path = load_signal_function(spec, bt.path)
+    except _NoAdapter as exc:
+        return _check(Status.UNVERIFIED, Strength.NONE, "none", str(exc), {})
     except Exception as exc:  # noqa: BLE001
         return _check(Status.ERROR, Strength.NONE, "none",
-                      f"Could not load the strategy: {type(exc).__name__}: {exc}", {}), None
-    dates = [str(d.date()) for d in bt.prices.index]
-    check = check_lookahead(func, bt.prices.to_numpy(dtype=float), dates, path.read_text())
-    check.evidence["strategy_file"] = path.name
-    check.evidence["symbols"] = list(bt.prices.columns)
-    return check, path
+                      f"Could not load the strategy: {type(exc).__name__}: {exc}", {})
+    return StrategyHandle(
+        func=func, data=bt.prices.to_numpy(dtype=float),
+        dates=[str(d.date()) for d in bt.prices.index], symbols=list(bt.prices.columns),
+        source=path.read_text(), hashed_file=path)
 
 
-def _run_engine_strategy(bt, spec: dict) -> tuple[Check, Path | None]:
-    """Lookahead check for a strategy written for a backtesting engine."""
+class _NoAdapter(Exception):
+    pass
+
+
+def _resolve_engine(bt, spec: dict) -> StrategyHandle:
     engine = spec.get("engine")
     if engine != "backtrader":
-        return _check(Status.UNVERIFIED, Strength.NONE, "none",
-                      f"No adapter for strategy engine {engine!r}; lookahead was not assessed",
-                      {}), None
-    try:
-        from .adapters import bt_adapter
+        raise _NoAdapter(f"No adapter for strategy engine {engine!r}; lookahead was not assessed")
+    from .adapters import bt_adapter
 
-        ohlcv_path = bt.path / spec.get("ohlcv", "ohlcv.csv")
-        dates, ohlcv = bt_adapter.load_ohlcv(ohlcv_path)
-        cls, source = bt_adapter.load_strategy_class(spec["class"], bt.path)
-        func = bt_adapter.make_signal_function(
-            cls, dates,
-            cash=float(spec.get("cash", bt.initial_capital)),
-            commission=float(spec.get("commission", float(bt.config.get("cost_bps", 0)) / 1e4)),
-            stake=int(spec.get("stake", 1)),
-            params=spec.get("params"),
-        )
-    except Exception as exc:  # noqa: BLE001
-        return _check(Status.ERROR, Strength.NONE, "none",
-                      f"Could not set up the strategy: {type(exc).__name__}: {exc}", {}), None
+    ohlcv_path = bt.path / spec.get("ohlcv", "ohlcv.csv")
+    dates, ohlcv = bt_adapter.load_ohlcv(ohlcv_path)
+    cls, source = bt_adapter.load_strategy_class(spec["class"], bt.path)
+    func = bt_adapter.make_signal_function(
+        cls, dates,
+        cash=float(spec.get("cash", bt.initial_capital)),
+        commission=float(spec.get("commission", float(bt.config.get("cost_bps", 0)) / 1e4)),
+        stake=int(spec.get("stake", 1)),
+        params=spec.get("params"),
+    )
+    return StrategyHandle(
+        func=func, data=ohlcv, dates=[str(d.date()) for d in dates],
+        symbols=list(bt.prices.columns), source=source, hashed_file=ohlcv_path,
+        engine="backtrader", traceable=False, n_cuts=int(spec.get("cut_offs", ENGINE_CUTS)),
+        # backtrader fills a market order at the next bar's open.
+        default_execution={"signal": "order_units", "multiplier": 1, "delay": 1, "price": "open"},
+        open_prices=ohlcv[:, 0],
+    )
 
-    check = check_lookahead(func, ohlcv, [str(d.date()) for d in dates], source,
-                            trace=False, n_cuts=int(spec.get("cut_offs", ENGINE_CUTS)))
-    check.evidence.update({"engine": "backtrader", "strategy_class": spec["class"],
-                           "signal": "order decisions per bar"})
-    return check, ohlcv_path
+
+def run(handle: StrategyHandle | Check) -> Check:
+    """Run the lookahead check for a resolved strategy."""
+    if isinstance(handle, Check):
+        return handle
+    check = check_lookahead(handle.func, handle.data, handle.dates, handle.source,
+                            trace=handle.traceable, n_cuts=handle.n_cuts)
+    check.evidence["symbols"] = handle.symbols
+    if handle.engine:
+        check.evidence.update({"engine": handle.engine, "signal": "order decisions per bar"})
+    return check

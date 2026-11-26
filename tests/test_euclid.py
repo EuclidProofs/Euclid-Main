@@ -8,11 +8,13 @@ from typer.testing import CliRunner
 from euclid.cli import app
 from euclid.loader import BacktestFormatError, load_backtest
 from euclid.model import Check, Status, Strength, VerdictStatus, aggregate
-from euclid import constraints, lookahead, recompute
+from euclid import constraints, execution, lookahead, recompute
 
 
 def run_all(bt):
-    return recompute.run_all(bt) + constraints.run_all(bt) + [lookahead.run(bt, None)[0]]
+    handle = lookahead.resolve(bt, None)
+    return (recompute.run_all(bt) + constraints.run_all(bt)
+            + [lookahead.run(handle)] + execution.run_all(bt, handle))
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,7 +52,9 @@ def test_flawed_backtest_flags_exactly_the_planted_errors(samples):
     checks = by_name(run_all(load_backtest(samples / "flawed")))
     failed = {n for n, c in checks.items() if c.status is Status.FAILED}
     assert failed == {"returns_reconcile", "costs_applied", "metric_sharpe",
-                      "constraint_max_position_weight", "lookahead"}
+                      "constraint_max_position_weight", "lookahead",
+                      "trades_follow_signals"}
+    assert checks["execution_prices"].status is Status.VERIFIED
     assert checks["lookahead"].evidence["counterexample"]["rows_ahead"] == 2
     weight = checks["constraint_max_position_weight"]
     assert weight.evidence["violations"] == 1
@@ -76,6 +80,7 @@ def test_missing_reported_metric_is_a_gap_not_a_pass(samples, tmp_path):
     assert checks["costs_applied"].status is Status.UNVERIFIED
     assert checks["constraints"].status is Status.UNVERIFIED
     assert checks["lookahead"].status is Status.UNVERIFIED
+    assert checks["trades_follow_signals"].status is Status.UNVERIFIED
     assert aggregate(list(checks.values()), "t").status is VerdictStatus.PARTIALLY_VERIFIED
 
 
@@ -171,3 +176,33 @@ def test_sharpe_matching_nothing_fails(samples, tmp_path):
         config["reported"]["sharpe"] = 9.87
 
     assert _with_config(samples, tmp_path, nonsense).status is Status.FAILED
+
+
+def test_a_trade_the_signals_did_not_call_for_is_caught(samples, tmp_path):
+    src = samples / "clean"
+    for f in ("prices.csv", "returns.csv", "config.json", "strategy.py"):
+        (tmp_path / f).write_bytes((src / f).read_bytes())
+    prices = (src / "prices.csv").read_text().splitlines()
+    date, _, close = prices[401].split(",")  # an AAA row late in the sample
+    trades = (src / "trades.csv").read_text().rstrip("\n")
+    (tmp_path / "trades.csv").write_text(f"{trades}\n{date},AAA,300.0,{float(close) + 1.0},0.0\n")
+
+    bt = load_backtest(tmp_path)
+    checks = by_name(execution.run_all(bt, lookahead.resolve(bt, None)))
+    follow = checks["trades_follow_signals"]
+    assert follow.status is Status.FAILED
+    assert follow.evidence["first_mismatch"]["date"] == date
+    assert checks["execution_prices"].status is Status.FAILED
+    assert checks["execution_prices"].evidence["mismatches"] == 1
+
+
+def test_no_execution_rule_is_a_gap(samples, tmp_path):
+    src = samples / "clean"
+    for f in ("prices.csv", "trades.csv", "returns.csv", "strategy.py"):
+        (tmp_path / f).write_bytes((src / f).read_bytes())
+    config = json.loads((src / "config.json").read_text())
+    del config["execution"]
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    bt = load_backtest(tmp_path)
+    checks = execution.run_all(bt, lookahead.resolve(bt, None))
+    assert [c.status for c in checks] == [Status.UNVERIFIED]

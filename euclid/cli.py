@@ -12,7 +12,7 @@ import typer
 from . import __version__
 from .loader import BacktestFormatError, _sha256, load_backtest
 from .model import Status, Verdict, VerdictStatus, aggregate
-from . import constraints, lookahead, recompute
+from . import constraints, execution, lookahead, recompute
 
 app = typer.Typer(add_completion=False, help="Independent verification for trading strategies.")
 
@@ -77,14 +77,15 @@ def verify(
         typer.echo(f"Cannot load backtest: {exc}", err=True)
         raise typer.Exit(code=3)
 
-    lookahead_check, strategy_path = lookahead.run(bt, strategy)
-    if strategy_path is not None:
-        bt.input_hashes[strategy_path.name] = _sha256(strategy_path)
-    checks = recompute.run_all(bt) + constraints.run_all(bt) + [lookahead_check]
+    handle = lookahead.resolve(bt, strategy)
+    if isinstance(handle, lookahead.StrategyHandle):
+        bt.input_hashes[handle.hashed_file.name] = _sha256(handle.hashed_file)
+    checks = (recompute.run_all(bt) + constraints.run_all(bt)
+              + [lookahead.run(handle)] + execution.run_all(bt, handle))
     scope = (
         f"{len(checks)} checks on {len(bt.reported_returns)} periods and "
         f"{len(bt.trades)} trades; annualisation {bt.periods_per_year}; "
-        "does not assess profitability or overfitting, or whether the trades follow the signals"
+        "does not assess profitability or overfitting"
     )
     verdict = aggregate(checks, scope)
     print_report(verdict)

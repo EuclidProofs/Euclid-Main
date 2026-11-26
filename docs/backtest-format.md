@@ -115,6 +115,23 @@ A backtrader `Strategy` class is event-driven, so it cannot be traced. EUCLID re
 
 `class` is `file.py:Class` or `package.module:Class`. `ohlcv.csv` has columns `date, open, high, low, close, volume` for one instrument. Needs `pip install backtrader`. The result is labelled `tested`, at 12 cut-off dates by default (`"cut_offs"` to change).
 
+## Execution rule (do the trades follow the signals?)
+
+EUCLID re-runs the strategy, applies your execution rule, and compares the result with `trades.csv`:
+
+```json
+"execution": {"signal": "target_units", "multiplier": 2000, "delay": 1, "price": "close"}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `signal` | `target_units`: signal x multiplier is the position to hold. `order_units`: signal x multiplier is the quantity to trade |
+| `multiplier` | Units per unit of signal (default 1) |
+| `delay` | Bars between a signal and its trade (default 1) |
+| `price` | `close` or `open`: the price each trade should have executed at. Omit to skip the price check |
+
+A backtrader strategy uses that engine's rule by default: orders fill one bar later at the open. Without a rule for a plain signal function, this check is **unverified**. Signals that mean a target portfolio weight are not supported yet.
+
 ## Sharpe ratio definition
 
 Sharpe ratios are computed many ways. Declare the one your report used:
