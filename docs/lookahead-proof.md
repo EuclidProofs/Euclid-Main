@@ -21,6 +21,7 @@ whole-sample statistics), their values, and the tag rule. Then it proves:
 | `no_lookahead` | If the tracer says clean at bar `t`, no change to any later price, on any instrument, can change the signal at `t`. |
 | `history_stable` | If a run is clean, new data can never rewrite the signals already produced. |
 | `cleanUpTo_sound` | The check written as a program is correct: when it returns true, the run is clean. |
+| `tag_mono` | Tags never go backwards: a later bar never depends on less data than an earlier one. |
 
 And two results about money:
 
@@ -67,11 +68,53 @@ lean lean/Lookahead.lean
 Every line of output should read `depends on axioms: [...]` with only `propext`,
 `Classical.choice` and `Quot.sound` inside the brackets.
 
+## Does the code follow the rule?
+
+The proof is about a model. `lean/crosscheck.py` tests the link to the real tracer. It builds
+random signals and computes each one twice: in Lean with the model, and in Python with
+ordinary NumPy calls running under `euclid/tracer.py`. Then it compares tags and values bar
+by bar.
+
+| Run | Signals | Bars compared | Tag disagreements | Value disagreements |
+| --- | --- | --- | --- | --- |
+| seed 1 | 5,000 | 100,000 | 0 | 0 |
+| seed 7 | 5,000 | 100,000 | 0 | 0 |
+
+About a third of the signals contain a real lookahead, so both verdicts are exercised. The
+Python side uses more than one NumPy route for the same operation (a backward shift by
+`concatenate`, by `roll` and by `pad`; a rolling total by `convolve` and by a sliding window),
+so several of the tracer's handlers are covered.
+
+A comparison that never complains proves little, so the script also plants bugs in the
+tracer and checks that it notices:
+
+| Planted change | Outcome |
+| --- | --- |
+| `np.where` drops the tag of its condition | Noticed |
+| `np.roll` moves values but not tags | Noticed |
+| `np.sum` and `np.max` keep the earliest tag instead of the latest | Noticed |
+| `np.cumsum` keeps only the current tag | Silent, correctly |
+
+The last one looks like a bug and is not one here. `tag_mono` proves that for these signals
+the latest tag so far is always the current tag, so the two rules give the same answer. It
+would matter for operations that reorder time, which are outside the model.
+
+Run it:
+
+```
+python lean/crosscheck.py --signals 5000 --seed 1
+```
+
+The saved output of both runs is in `lean/results/`.
+
 ## Limits
 
 - **This is a proof about the rule, not about the Python.** The theorem covers the model in
-  the Lean file. That `euclid/tracer.py` implements the same rule is established by tests,
-  not by this proof. A result that relies on both is labelled `traced`, not `proven`.
+  the Lean file. That `euclid/tracer.py` implements the same rule is established by the
+  comparison above: 10,000 random signals with no disagreement. That is a test, not a proof,
+  so a result that relies on both is labelled `traced`, not `proven`.
+- **The comparison covers ten kinds of operation**, the ones in the model. The tracer handles
+  many more NumPy functions than that; those are covered by the ordinary test suite only.
 - **Only the modelled operations are covered.** Sorting, data-dependent indexing and
   anything the tracer cannot follow are outside the model. The tracer already refuses to
   give a verdict on code it cannot follow.

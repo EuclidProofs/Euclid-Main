@@ -218,6 +218,73 @@ theorem cleanUpTo_sound {α : Type} (e : Expr α) : ∀ n, cleanUpTo e n = true 
         subst this
         exact h'.2
 
+/-! ## Tags never go backwards
+
+For every signal in this language the tag is non-decreasing in time: a later bar never
+depends on less data than an earlier one. This is why a running total needs no special
+treatment here, and it marks the edge of the model: operations that reorder time, such as
+reversing or sorting a series, break it and are not covered. -/
+
+/-- Folding more values can only raise the maximum. -/
+theorem maxTo_mono_len {g : Nat → Nat} {n m : Nat} (h : n ≤ m) : maxTo g n ≤ maxTo g m :=
+  maxTo_le n (fun _ hj => le_maxTo (Nat.lt_of_lt_of_le hj h))
+
+/-- **Tags are monotone in time.** -/
+theorem tag_mono {α : Type} : ∀ (e : Expr α) {t t' : Nat}, t ≤ t' → tag e t ≤ tag e t' := by
+  intro e
+  induction e with
+  | input i =>
+      intro t t' h
+      exact h
+  | const c =>
+      intro t t' _
+      exact Nat.le_refl 0
+  | lag k fill e ih =>
+      intro t t' h
+      by_cases hk : k ≤ t
+      · have hk' : k ≤ t' := Nat.le_trans hk h
+        have hsub : t - k ≤ t' - k := by omega
+        simpa [tag, hk, hk'] using ih hsub
+      · have h0 : tag (Expr.lag k fill e) t = 0 := by simp [tag, hk]
+        rw [h0]
+        exact Nat.zero_le _
+  | lead k e ih =>
+      intro t t' h
+      have hadd : t + k ≤ t' + k := by omega
+      exact ih hadd
+  | map1 f e ih =>
+      intro t t' h
+      exact ih h
+  | map2 f a b iha ihb =>
+      intro t t' h
+      show max (tag a t) (tag b t) ≤ max (tag a t') (tag b t')
+      exact Nat.max_le.mpr ⟨Nat.le_trans (iha h) (Nat.le_max_left _ _),
+                            Nat.le_trans (ihb h) (Nat.le_max_right _ _)⟩
+  | select test c a b ihc iha ihb =>
+      intro t t' h
+      show max (tag c t) (max (tag a t) (tag b t)) ≤ max (tag c t') (max (tag a t') (tag b t'))
+      exact Nat.max_le.mpr
+        ⟨Nat.le_trans (ihc h) (Nat.le_max_left _ _),
+         Nat.max_le.mpr
+          ⟨Nat.le_trans (iha h) (Nat.le_trans (Nat.le_max_left _ _) (Nat.le_max_right _ _)),
+           Nat.le_trans (ihb h) (Nat.le_trans (Nat.le_max_right _ _) (Nat.le_max_right _ _))⟩⟩
+  | rolling f init w e ih =>
+      intro t t' h
+      show maxTo (fun j => tag e (t - j)) (min w (t + 1))
+         ≤ maxTo (fun j => tag e (t' - j)) (min w (t' + 1))
+      apply maxTo_le
+      intro j hj
+      have hj' : j < min w (t' + 1) := by omega
+      have hsub : t - j ≤ t' - j := by omega
+      exact Nat.le_trans (ih hsub) (le_maxTo (g := fun j => tag e (t' - j)) hj')
+  | cumulative f init e ih =>
+      intro t t' h
+      show maxTo (fun j => tag e j) (t + 1) ≤ maxTo (fun j => tag e j) (t' + 1)
+      exact maxTo_mono_len (by omega)
+  | wholeSample f init n e ih =>
+      intro t t' _
+      exact Nat.le_refl _
+
 /-! ## Worked examples
 
 Five signals over integer prices. Each verdict below is a theorem, not a test. -/
@@ -475,6 +542,7 @@ Printed when the file is compiled. Every line should list only Lean's standard a
 #print axioms no_lookahead
 #print axioms history_stable
 #print axioms cleanUpTo_sound
+#print axioms tag_mono
 #print axioms peek_leaks
 #print axioms demeanWhole_flagged
 #print axioms roundTrip_clean

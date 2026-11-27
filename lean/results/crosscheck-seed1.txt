@@ -1,0 +1,16 @@
+
+signals: 5000   bars compared: 100000
+signals with at least one flagged bar (a real lookahead in the model): 1739
+operations exercised: const 1555, cumulative 1270, input 8592, lag 2132, lead 1645, map1 1305, map2 2971, rolling 1896, select 1088, whole 1248
+tag disagreements:      0
+verdict disagreements:  0
+value disagreements:    0 of 100000 compared (0 too large to compare exactly)
+
+planted bugs (each must be noticed):
+  noticed  np.where drops the tag of its condition: 8270 disagreeing bars
+  noticed  np.roll moves values but not tags: 13808 disagreeing bars
+  noticed  np.sum and np.max keep the earliest tag, not the latest: 28137 disagreeing bars
+harmless change (must not raise an alarm):
+  silent   np.cumsum keeps only the current tag: 0 disagreeing bars
+
+PASS  (58s)
