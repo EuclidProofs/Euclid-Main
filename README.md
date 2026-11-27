@@ -165,6 +165,7 @@ The overall strength of a verdict is the weakest strength among its parts.
 - [x] Check that recorded trades follow from the signals
 - [x] Stress testing with injected broker faults, and a bug-pattern scan
 - [x] More fault types: price gaps, missing bars, two refusals in a row
+- [x] First Lean 4 proof: the lookahead tracing rule is sound (`lean/Lookahead.lean`)
 - [ ] Trading rules checked over every reachable state
 - [ ] Pricing and risk checks
 - [ ] Lean 4 library of reusable lemmas
